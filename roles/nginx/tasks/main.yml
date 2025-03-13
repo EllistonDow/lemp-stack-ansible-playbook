@@ -1,0 +1,341 @@
+---
+# Nginx installation and configuration tasks
+
+- name: Install required packages
+  apt:
+    name:
+      - curl
+      - gnupg2
+      - ca-certificates
+      - lsb-release
+      - build-essential
+      - libpcre3-dev
+      - zlib1g-dev
+      - libssl-dev
+      - libtool
+      - autoconf
+      - automake
+      - git
+      - libxml2-dev
+      - libcurl4-openssl-dev
+      - pkg-config
+      - libgeoip-dev
+      - libxslt1-dev
+      - libgd-dev
+    state: present
+    update_cache: yes
+
+- name: Add Nginx signing key
+  apt_key:
+    url: https://nginx.org/keys/nginx_signing.key
+    state: present
+
+- name: Add Nginx repository
+  apt_repository:
+    repo: "deb http://nginx.org/packages/ubuntu {{ ansible_distribution_release }} nginx"
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+- name: Add Nginx repository (alternative)
+  apt_repository:
+    repo: "deb http://nginx.org/packages/mainline/ubuntu {{ ansible_distribution_release }} nginx"
+    state: present
+    update_cache: yes
+  when: ansible_distribution_release == "noble"
+
+# Check if ModSecurity is already installed
+- name: Check if ModSecurity module exists
+  stat:
+    path: /usr/lib/nginx/modules/ngx_http_modsecurity_module.so
+  register: modsec_module_exists
+
+# Skip ModSecurity installation if already installed
+- name: Set ModSecurity installation flag
+  set_fact:
+    skip_modsec_install: "{{ modsec_module_exists.stat.exists }}"
+
+# ModSecurity installation
+- name: Clean ModSecurity directory if exists
+  file:
+    path: /tmp/ModSecurity
+    state: absent
+  ignore_errors: yes
+  when: not skip_modsec_install
+
+- name: Clone ModSecurity repository
+  git:
+    repo: https://github.com/SpiderLabs/ModSecurity.git
+    dest: /tmp/ModSecurity
+    force: yes
+  ignore_errors: yes
+  when: not skip_modsec_install
+
+- name: Build ModSecurity (this may take some time)
+  shell: |
+    cd /tmp/ModSecurity
+    git submodule init
+    git submodule update
+    ./build.sh
+    ./configure
+    make
+    make install
+  args:
+    creates: /usr/local/modsecurity/lib/libmodsecurity.so
+  ignore_errors: yes
+
+# Install Nginx with dynamic modules support
+- name: Install Nginx
+  apt:
+    name: nginx=1.24.0-2ubuntu7.1
+    state: present
+    update_cache: yes
+    force: yes
+  ignore_errors: yes
+  register: nginx_installed
+  when: not skip_modsec_install
+
+- name: Install Nginx (alternative)
+  apt:
+    name: nginx
+    state: present
+    update_cache: yes
+  when: ansible_distribution_release == "noble"
+  register: nginx_alt_installed
+
+- name: Get Nginx version and configure path
+  shell: nginx -V 2>&1 | grep -o 'configure arguments:.*' | sed 's/configure arguments://'
+  register: nginx_configure_args
+  changed_when: false
+  ignore_errors: yes
+  when: nginx_installed.changed or nginx_alt_installed.changed
+
+- name: Get Nginx version
+  shell: nginx -v 2>&1 | grep -o '[0-9]\.[0-9]\+\.[0-9]\+'
+  register: nginx_version
+  changed_when: false
+  ignore_errors: yes
+  when: nginx_installed.changed or nginx_alt_installed.changed
+
+- name: Download Nginx source
+  get_url:
+    url: "https://nginx.org/download/nginx-{{ nginx_version.stdout }}.tar.gz"
+    dest: "/tmp/nginx-{{ nginx_version.stdout }}.tar.gz"
+  when: nginx_version.rc == 0 and (nginx_installed.changed or nginx_alt_installed.changed)
+  ignore_errors: yes
+
+- name: Extract Nginx source
+  unarchive:
+    src: "/tmp/nginx-{{ nginx_version.stdout }}.tar.gz"
+    dest: /tmp
+    remote_src: yes
+  when: nginx_version.rc == 0 and (nginx_installed.changed or nginx_alt_installed.changed)
+  ignore_errors: yes
+
+- name: Clean ModSecurity-nginx directory if exists
+  file:
+    path: /tmp/ModSecurity-nginx
+    state: absent
+  when: (nginx_installed.changed or nginx_alt_installed.changed) and not skip_modsec_install
+
+- name: Clone ModSecurity-nginx connector
+  git:
+    repo: https://github.com/SpiderLabs/ModSecurity-nginx.git
+    dest: /tmp/ModSecurity-nginx
+    force: yes
+  when: (nginx_installed.changed or nginx_alt_installed.changed) and not skip_modsec_install
+  register: modsec_nginx_cloned
+
+- name: Compile ModSecurity-nginx module
+  shell: |
+    cd /tmp/nginx-{{ nginx_version.stdout }}
+    ./configure {{ nginx_configure_args.stdout }} --add-dynamic-module=/tmp/ModSecurity-nginx
+    make modules
+    cp objs/ngx_http_modsecurity_module.so /usr/lib/nginx/modules/
+  args:
+    creates: /usr/lib/nginx/modules/ngx_http_modsecurity_module.so
+  when: nginx_version.rc == 0 and modsec_nginx_cloned.changed
+  ignore_errors: yes
+
+- name: Create modules directory if it doesn't exist
+  file:
+    path: /usr/lib/nginx/modules
+    state: directory
+    mode: '0755'
+  when: nginx_installed.changed or nginx_alt_installed.changed
+
+- name: Create Nginx server blocks directory
+  file:
+    path: /etc/nginx/sites-available
+    state: directory
+    mode: '0755'
+
+- name: Create Nginx enabled sites directory
+  file:
+    path: /etc/nginx/sites-enabled
+    state: directory
+    mode: '0755'
+
+- name: Create Nginx snippets directory
+  file:
+    path: /etc/nginx/snippets
+    state: directory
+    mode: '0755'
+
+# ModSecurity configuration
+- name: Create ModSecurity directory
+  file:
+    path: /etc/nginx/modsecurity
+    state: directory
+    mode: '0755'
+  ignore_errors: yes
+
+- name: Create ModSecurity log files
+  file:
+    path: "{{ item }}"
+    state: touch
+    mode: '0666'
+    owner: www-data
+    group: www-data
+  with_items:
+    - /var/log/nginx/modsec_audit.log
+    - /var/log/nginx/modsec_debug.log
+  ignore_errors: yes
+
+- name: Copy ModSecurity configuration
+  template:
+    src: modsecurity.conf.j2
+    dest: /etc/nginx/modsecurity/modsecurity.conf
+    mode: '0644'
+  ignore_errors: yes
+
+- name: Enable ModSecurity
+  lineinfile:
+    path: /etc/nginx/modsecurity/modsecurity.conf
+    regexp: '^SecRuleEngine DetectionOnly'
+    line: 'SecRuleEngine On'
+  when: modsec_cloned.changed
+  ignore_errors: yes
+
+- name: Create unicode.mapping file
+  copy:
+    src: /tmp/ModSecurity/unicode.mapping
+    dest: /etc/nginx/modsecurity/unicode.mapping
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: modsec_cloned.changed
+  ignore_errors: yes
+
+- name: Clean OWASP CRS directory if exists
+  file:
+    path: /etc/nginx/modsecurity/owasp-crs
+    state: absent
+
+- name: Clone OWASP ModSecurity Core Rule Set
+  git:
+    repo: https://github.com/coreruleset/coreruleset.git
+    dest: /etc/nginx/modsecurity/owasp-crs
+    version: v3.3.5
+    force: yes
+  register: crs_cloned
+
+- name: Copy CRS configuration
+  copy:
+    src: /etc/nginx/modsecurity/owasp-crs/crs-setup.conf.example
+    dest: /etc/nginx/modsecurity/owasp-crs/crs-setup.conf
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: crs_cloned.changed
+  ignore_errors: yes
+
+- name: Create ModSecurity main configuration
+  template:
+    src: modsecurity-main.conf.j2
+    dest: /etc/nginx/modsecurity/main.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Configure Nginx to load ModSecurity
+  template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart nginx
+
+- name: Create fastcgi_params
+  template:
+    src: fastcgi_params.j2
+    dest: /etc/nginx/fastcgi_params
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart nginx
+
+- name: Create fastcgi-php.conf
+  template:
+    src: fastcgi-php.conf.j2
+    dest: /etc/nginx/snippets/fastcgi-php.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart nginx
+
+- name: Create default server block
+  template:
+    src: default.conf.j2
+    dest: /etc/nginx/sites-available/default
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart nginx
+
+- name: Enable default server block
+  file:
+    src: /etc/nginx/sites-available/default
+    dest: /etc/nginx/sites-enabled/default
+    state: link
+  notify: restart nginx
+
+- name: Allow HTTP through UFW
+  ufw:
+    rule: allow
+    port: 80
+    proto: tcp
+
+- name: Allow HTTPS through UFW
+  ufw:
+    rule: allow
+    port: 443
+    proto: tcp
+
+- name: Start and enable Nginx service
+  systemd:
+    name: nginx
+    state: started
+    enabled: yes
+
+- name: Enable ModSecurity in Nginx configuration
+  lineinfile:
+    path: /etc/nginx/nginx.conf
+    regexp: '^#?\s*load_module\s+.*ngx_http_modsecurity_module.so'
+    line: 'load_module /usr/lib/nginx/modules/ngx_http_modsecurity_module.so;'
+    insertbefore: '^events'
+  ignore_errors: yes
+
+- name: Enable ModSecurity in Nginx http block
+  blockinfile:
+    path: /etc/nginx/nginx.conf
+    marker: "# {mark} MODSECURITY CONFIGURATION"
+    insertafter: '^http {'
+    block: |
+      # ModSecurity
+      modsecurity on;
+      modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
+  ignore_errors: yes 

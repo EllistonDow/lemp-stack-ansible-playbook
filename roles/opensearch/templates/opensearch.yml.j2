@@ -1,0 +1,34 @@
+# OpenSearch configuration file
+
+# Cluster
+cluster.name: opensearch-cluster
+
+# Node
+node.name: node-1
+node.master: true
+node.data: true
+node.ingest: true
+
+# Paths
+path.data: /var/lib/opensearch
+path.logs: /var/log/opensearch
+
+# Network
+network.host: 127.0.0.1
+http.port: 9200
+transport.port: 9300
+
+# Discovery
+discovery.type: single-node
+
+# Security
+plugins.security.disabled: true
+
+# Performance
+bootstrap.memory_lock: false
+thread_pool.write.queue_size: 1000
+thread_pool.search.queue_size: 1000
+
+# Indices
+action.auto_create_index: true
+action.destructive_requires_name: true 

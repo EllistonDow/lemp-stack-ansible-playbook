@@ -1,0 +1,42 @@
+---
+# certbot installation and configuration tasks
+
+- name: Install certbot and Nginx plugin
+  apt:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: latest
+    update_cache: yes
+
+- name: Create webroot directory for certbot
+  file:
+    path: /var/www/letsencrypt
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: '0755'
+
+- name: Create certbot renewal hook directory
+  file:
+    path: /etc/letsencrypt/renewal-hooks/post
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create Nginx reload script for certbot
+  template:
+    src: nginx-reload.sh.j2
+    dest: /etc/letsencrypt/renewal-hooks/post/nginx-reload.sh
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Set up certbot auto-renewal
+  cron:
+    name: "Certbot renewal"
+    job: "certbot renew --quiet"
+    hour: "3"
+    minute: "30"
+    weekday: "1" 

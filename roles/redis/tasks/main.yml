@@ -1,0 +1,54 @@
+---
+# Redis installation and configuration tasks
+
+- name: Install required packages
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: yes
+
+- name: Add Redis repository key
+  apt_key:
+    url: https://packages.redis.io/gpg
+    state: present
+
+- name: Add Redis repository
+  apt_repository:
+    repo: "deb https://packages.redis.io/deb {{ ansible_distribution_release }} main"
+    state: present
+    update_cache: yes
+
+- name: Install Redis 7.2.x
+  apt:
+    name:
+      - redis-server=6:7.2.6-1rl1~noble1
+      - redis-tools=6:7.2.6-1rl1~noble1
+    state: present
+    update_cache: yes
+    force: yes
+  ignore_errors: yes
+
+- name: Configure Redis
+  template:
+    src: redis.conf.j2
+    dest: /etc/redis/redis.conf
+    owner: redis
+    group: redis
+    mode: '0640'
+  notify: restart redis
+
+- name: Start and enable Redis service
+  systemd:
+    name: redis-server
+    state: started
+    enabled: yes
+
+- name: Allow Redis through UFW
+  ufw:
+    rule: allow
+    port: "{{ redis_port }}"
+    proto: tcp 

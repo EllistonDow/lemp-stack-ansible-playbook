@@ -1,0 +1,15 @@
+# RabbitMQ configuration file
+
+# Network
+listeners.tcp.default = {{ rabbitmq_port }}
+management.tcp.port = {{ rabbitmq_management_port }}
+
+# Security
+loopback_users = none
+default_user = guest
+default_pass = guest
+default_vhost = /
+
+# Resource limits
+disk_free_limit.absolute = {{ rabbitmq_disk_free_limit }}
+vm_memory_high_watermark.relative = {{ rabbitmq_vm_memory_high_watermark }} 

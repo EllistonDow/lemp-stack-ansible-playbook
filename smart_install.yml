@@ -1,0 +1,97 @@
+---
+# Smart LEMP Stack Playbook for Ubuntu 24.04
+- name: Smart Install LEMP Stack and Additional Components
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Copy detection script
+      copy:
+        src: detect_components.sh
+        dest: /tmp/detect_components.sh
+        mode: '0755'
+
+    - name: Run detection script
+      shell: /tmp/detect_components.sh
+      register: detection_result
+      changed_when: false
+
+    - name: Parse detection results
+      set_fact:
+        components_status: "{{ dict(detection_result.stdout_lines | map('split', '=')) }}"
+
+    - name: Display detected components
+      debug:
+        var: components_status
+
+  roles:
+    - role: common
+
+    - role: nginx
+      when: components_status.nginx == 'not_installed'
+
+    - role: php
+      when: components_status.php == 'not_installed'
+
+    - role: composer
+      when: components_status.composer == 'not_installed'
+
+    - role: percona
+      when: components_status.percona == 'not_installed'
+
+    - role: redis
+      when: components_status.redis == 'not_installed'
+
+    - role: rabbitmq
+      when: components_status.rabbitmq == 'not_installed'
+
+    - role: varnish
+      when: components_status.varnish == 'not_installed'
+
+    - role: opensearch
+      when: components_status.opensearch == 'not_installed'
+
+    - role: fail2ban
+      when: components_status.fail2ban == 'not_installed'
+
+    - role: certbot
+      when: components_status.certbot == 'not_installed'
+
+    - role: phpmyadmin
+      when: components_status.phpmyadmin == 'not_installed'
+
+    - role: webmin
+      when: components_status.webmin == 'not_installed'
+
+  post_tasks:
+    - name: Run detection script after installation
+      shell: /tmp/detect_components.sh
+      register: final_detection_result
+      changed_when: false
+
+    - name: Parse final detection results
+      set_fact:
+        final_components_status: "{{ dict(final_detection_result.stdout_lines | map('split', '=')) }}"
+
+    - name: Display final installation status
+      debug:
+        msg: |
+          Final Installation Status:
+          {% for component, status in final_components_status.items() %}
+          - {{ component }}: {{ status }}
+          {% endfor %}
+
+    - name: Display installation summary
+      debug:
+        msg: |
+          Installation Summary:
+          {% for component, status in components_status.items() %}
+          - {{ component }}: {% if status == 'installed' %}Already installed (skipped){% else %}Newly installed{% endif %}
+          {% endfor %} 

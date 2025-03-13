@@ -1,0 +1,13 @@
+---
+# RabbitMQ default variables
+rabbitmq_port: 5672
+rabbitmq_management_port: 15672
+rabbitmq_admin_user: "admin"
+rabbitmq_admin_password: "StrongAdminPassword123!"
+rabbitmq_app_user: "app_user"
+rabbitmq_app_password: "StrongAppPassword123!"
+rabbitmq_vhost: "app_vhost"
+
+# RabbitMQ configuration
+rabbitmq_disk_free_limit: "50MB"
+rabbitmq_vm_memory_high_watermark: 0.4 

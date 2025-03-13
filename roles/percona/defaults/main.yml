@@ -1,0 +1,15 @@
+---
+# Percona Server default variables
+mysql_root_password: "StrongRootPassword123!"
+mysql_database: "myapp"
+mysql_user: "myapp_user"
+mysql_password: "StrongUserPassword123!"
+mysql_host: "localhost"
+
+# MySQL configuration
+mysql_max_connections: 151
+mysql_innodb_buffer_pool_size: "256M"
+mysql_innodb_log_file_size: "64M"
+mysql_innodb_flush_log_at_trx_commit: 1
+mysql_character_set_server: "utf8mb4"
+mysql_collation_server: "utf8mb4_unicode_ci" 

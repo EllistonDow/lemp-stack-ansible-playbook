@@ -1,0 +1,19 @@
+---
+all:
+  children:
+    webservers:
+      hosts:
+        localhost:
+          ansible_connection: local
+          # 如果您想在本地测试，可以使用上面的localhost配置
+          
+        # 或者使用实际的远程服务器配置
+        # webserver1:
+        #   ansible_host: 您的实际服务器IP地址
+        #   ansible_user: 您的SSH用户名
+        #   ansible_port: 22  # 如果SSH端口不是22，请修改
+        #   ansible_ssh_private_key_file: /path/to/your/private/key
+        #   # ansible_ssh_pass: your_password  # 不推荐在生产环境中使用密码
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3 

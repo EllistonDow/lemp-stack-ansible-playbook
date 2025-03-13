@@ -1,0 +1,7 @@
+---
+# Webmin handlers
+
+- name: restart webmin
+  systemd:
+    name: webmin
+    state: restarted 

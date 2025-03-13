@@ -1,0 +1,15 @@
+---
+# PHP default variables
+php_memory_limit: "4G"
+php_max_execution_time: "60"
+php_upload_max_filesize: "64M"
+php_post_max_size: "64M"
+php_date_timezone: "{{ timezone | default('UTC') }}"
+
+# PHP-FPM settings
+php_fpm_pm: "dynamic"
+php_fpm_max_children: "50"
+php_fpm_start_servers: "5"
+php_fpm_min_spare_servers: "5"
+php_fpm_max_spare_servers: "35"
+php_fpm_max_requests: "500" 

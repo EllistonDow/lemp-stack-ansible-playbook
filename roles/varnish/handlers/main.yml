@@ -1,0 +1,10 @@
+---
+# Varnish handlers
+
+- name: restart varnish
+  systemd:
+    name: varnish
+    state: restarted
+
+- name: reload systemd
+  command: systemctl daemon-reload 

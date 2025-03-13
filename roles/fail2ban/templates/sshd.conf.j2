@@ -1,0 +1,6 @@
+[sshd]
+enabled = {{ fail2ban_ssh_enabled | lower }}
+port = {{ fail2ban_ssh_port }}
+filter = {{ fail2ban_ssh_filter }}
+logpath = {{ fail2ban_ssh_logpath }}
+maxretry = {{ fail2ban_ssh_maxretry }} 

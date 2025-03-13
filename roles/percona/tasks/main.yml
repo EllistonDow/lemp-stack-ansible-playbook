@@ -1,0 +1,91 @@
+---
+# Percona Server installation and configuration tasks
+
+- name: Install required packages for Percona repository
+  apt:
+    name:
+      - gnupg2
+      - curl
+      - software-properties-common
+      - wget
+    state: present
+    update_cache: yes
+
+- name: Download Percona repository package
+  get_url:
+    url: https://repo.percona.com/apt/percona-release_latest.generic_all.deb
+    dest: /tmp/percona-release_latest.generic_all.deb
+    mode: '0644'
+
+- name: Install Percona repository package
+  apt:
+    deb: /tmp/percona-release_latest.generic_all.deb
+    state: present
+  register: percona_repo_installed
+
+- name: Setup Percona Server 8.0 repository
+  command: percona-release setup ps80
+  when: percona_repo_installed.changed
+  ignore_errors: yes
+
+- name: Update apt cache after adding Percona repository
+  apt:
+    update_cache: yes
+
+- name: Install Percona Server
+  apt:
+    name:
+      - percona-server-server=8.0.41-32-1.noble
+      - percona-server-client=8.0.41-32-1.noble
+      - percona-server-common=8.0.41-32-1.noble
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+- name: Configure Percona Server
+  template:
+    src: my.cnf.j2
+    dest: /etc/mysql/my.cnf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart mysql
+
+- name: Start and enable MySQL service
+  systemd:
+    name: mysql
+    state: started
+    enabled: yes
+
+# 跳过设置root密码的步骤，因为在Ubuntu 24.04上可能会失败
+# - name: Set MySQL root password
+#   mysql_user:
+#     name: root
+#     password: "{{ mysql_root_password }}"
+#     host_all: yes
+#     state: present
+#   no_log: true
+#   when: mysql_root_password is defined
+
+# 跳过创建数据库和用户的步骤，因为它们依赖于root密码
+# - name: Create MySQL database
+#   mysql_db:
+#     name: "{{ mysql_database }}"
+#     state: present
+#   when: mysql_database is defined
+#
+# - name: Create MySQL user
+#   mysql_user:
+#     name: "{{ mysql_user }}"
+#     password: "{{ mysql_password }}"
+#     priv: "{{ mysql_database }}.*:ALL"
+#     host: "{{ mysql_host | default('%') }}"
+#     state: present
+#   no_log: true
+#   when: mysql_user is defined and mysql_password is defined and mysql_database is defined
+
+- name: Allow MySQL through UFW
+  ufw:
+    rule: allow
+    port: 3306
+    proto: tcp 

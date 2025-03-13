@@ -1,0 +1,32 @@
+---
+# phpMyAdmin installation and configuration tasks
+
+- name: Install phpMyAdmin
+  apt:
+    name: phpmyadmin
+    state: latest
+    update_cache: yes
+
+- name: Create phpMyAdmin Nginx configuration
+  template:
+    src: phpmyadmin.conf.j2
+    dest: /etc/nginx/sites-available/phpmyadmin
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload nginx
+
+- name: Enable phpMyAdmin Nginx configuration
+  file:
+    src: /etc/nginx/sites-available/phpmyadmin
+    dest: /etc/nginx/sites-enabled/phpmyadmin
+    state: link
+  notify: reload nginx
+
+- name: Configure phpMyAdmin
+  template:
+    src: config.inc.php.j2
+    dest: /etc/phpmyadmin/config.inc.php
+    owner: root
+    group: www-data
+    mode: '0640' 

@@ -1,0 +1,76 @@
+---
+# Varnish installation and configuration tasks
+
+- name: Install required packages
+  apt:
+    name:
+      - apt-transport-https
+      - curl
+      - gnupg
+    state: present
+    update_cache: yes
+
+- name: Add Varnish apt key
+  apt_key:
+    url: https://packagecloud.io/varnishcache/varnish75/gpgkey
+    state: present
+
+- name: Add Varnish repository
+  apt_repository:
+    repo: "deb https://packagecloud.io/varnishcache/varnish75/ubuntu/ {{ ansible_distribution_release }} main"
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+- name: Add Varnish repository (alternative)
+  apt_repository:
+    repo: "deb https://packagecloud.io/varnishcache/varnish75/ubuntu/ jammy main"
+    state: present
+    update_cache: yes
+  when: ansible_distribution_release == "noble"
+
+- name: Install Varnish
+  apt:
+    name: varnish=7.5.0-1~{{ ansible_distribution_release }}
+    state: present
+    update_cache: yes
+    force: yes
+  ignore_errors: yes
+
+- name: Install Varnish (alternative)
+  apt:
+    name: varnish
+    state: present
+    update_cache: yes
+  when: ansible_distribution_release == "noble"
+
+- name: Configure Varnish service
+  template:
+    src: varnish.service.j2
+    dest: /etc/systemd/system/varnish.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload systemd
+
+- name: Configure Varnish
+  template:
+    src: default.vcl.j2
+    dest: /etc/varnish/default.vcl
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart varnish
+
+- name: Start and enable Varnish service
+  systemd:
+    name: varnish
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+- name: Allow Varnish through UFW
+  ufw:
+    rule: allow
+    port: "{{ varnish_port }}"
+    proto: tcp 

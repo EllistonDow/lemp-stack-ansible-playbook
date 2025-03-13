@@ -1,0 +1,35 @@
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name _;
+    root /var/www/html;
+    index index.php index.html index.htm;
+
+    # ModSecurity
+    # Commented out until we successfully compile and install the module
+    # modsecurity on;
+    # modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    # Pass PHP scripts to PHP-FPM
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
+    }
+
+    # Deny access to .htaccess files
+    location ~ /\.ht {
+        deny all;
+    }
+
+    # Additional security headers
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+} 

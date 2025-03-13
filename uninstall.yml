@@ -1,0 +1,225 @@
+---
+# Uninstall Playbook for LEMP Stack and related components
+- name: Uninstall all components
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Stop all services
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      ignore_errors: yes
+      with_items:
+        - nginx
+        - php8.3-fpm
+        - php8.4-fpm
+        - mysql
+        - redis-server
+        - rabbitmq-server
+        - varnish
+        - opensearch
+        - fail2ban
+        - certbot.timer
+
+    - name: Uninstall OpenSearch
+      apt:
+        name: opensearch
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall Varnish
+      apt:
+        name: varnish
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall RabbitMQ
+      apt:
+        name: rabbitmq-server
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall Redis
+      apt:
+        name:
+          - redis-server
+          - redis-tools
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall Percona MySQL
+      apt:
+        name:
+          - percona-server-server
+          - percona-server-client
+          - percona-server-common
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall PHP 8.3
+      apt:
+        name:
+          - php8.3
+          - php8.3-fpm
+          - php8.3-cli
+          - php8.3-common
+          - php8.3-opcache
+          - php8.3-mysql
+          - php8.3-zip
+          - php8.3-gd
+          - php8.3-mbstring
+          - php8.3-curl
+          - php8.3-xml
+          - php8.3-bcmath
+          - php8.3-intl
+          - php8.3-soap
+          - php8.3-ldap
+          - php8.3-imap
+          - php8.3-redis
+          - php8.3-imagick
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall PHP 8.4
+      apt:
+        name:
+          - php8.4
+          - php8.4-fpm
+          - php8.4-cli
+          - php8.4-common
+          - php8.4-opcache
+          - php8.4-mysql
+          - php8.4-zip
+          - php8.4-gd
+          - php8.4-mbstring
+          - php8.4-curl
+          - php8.4-xml
+          - php8.4-bcmath
+          - php8.4-intl
+          - php8.4-soap
+          - php8.4-ldap
+          - php8.4-imap
+          - php8.4-redis
+          - php8.4-imagick
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall Nginx
+      apt:
+        name: nginx
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall Composer
+      file:
+        path: /usr/local/bin/composer
+        state: absent
+      ignore_errors: yes
+
+    - name: Uninstall fail2ban
+      apt:
+        name: fail2ban
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall certbot
+      apt:
+        name: certbot
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall phpMyAdmin
+      apt:
+        name: phpmyadmin
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Uninstall Webmin
+      apt:
+        name: webmin
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Remove configuration directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      ignore_errors: yes
+      with_items:
+        - /etc/nginx
+        - /etc/php
+        - /etc/mysql
+        - /etc/redis
+        - /etc/rabbitmq
+        - /etc/varnish
+        - /etc/opensearch
+        - /etc/fail2ban
+        - /etc/letsencrypt
+        - /etc/phpmyadmin
+        - /etc/webmin
+
+    - name: Remove data directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      ignore_errors: yes
+      with_items:
+        - /var/lib/mysql
+        - /var/lib/redis
+        - /var/lib/rabbitmq
+        - /var/lib/opensearch
+
+    - name: Remove log directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      ignore_errors: yes
+      with_items:
+        - /var/log/nginx
+        - /var/log/php*
+        - /var/log/mysql
+        - /var/log/redis
+        - /var/log/rabbitmq
+        - /var/log/varnish
+        - /var/log/opensearch
+
+    - name: Remove repositories
+      apt_repository:
+        repo: "{{ item }}"
+        state: absent
+      ignore_errors: yes
+      with_items:
+        - "deb http://nginx.org/packages/ubuntu {{ ansible_distribution_release }} nginx"
+        - "deb http://nginx.org/packages/mainline/ubuntu {{ ansible_distribution_release }} nginx"
+        - "ppa:ondrej/php"
+        - "deb https://packages.redis.io/deb {{ ansible_distribution_release }} main"
+        - "deb https://packagecloud.io/varnishcache/varnish75/ubuntu/ {{ ansible_distribution_release }} main"
+        - "deb https://artifacts.opensearch.org/releases/bundle/opensearch/2.x/apt stable main"
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Autoremove unused packages
+      apt:
+        autoremove: yes
+        purge: yes
+
+    - name: Clean apt cache
+      apt:
+        autoclean: yes 

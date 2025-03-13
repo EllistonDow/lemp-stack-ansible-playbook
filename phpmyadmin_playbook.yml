@@ -1,0 +1,19 @@
+---
+# phpMyAdmin Playbook for Ubuntu 24.04
+- name: Install phpMyAdmin
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+  roles:
+    - common
+    - nginx
+    - php
+    - phpmyadmin 

@@ -1,0 +1,89 @@
+---
+# RabbitMQ installation and configuration tasks
+
+- name: Install required packages
+  apt:
+    name:
+      - curl
+      - gnupg
+      - apt-transport-https
+    state: present
+    update_cache: yes
+
+- name: Remove any existing RabbitMQ repositories
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /etc/apt/sources.list.d/rabbitmq_rabbitmq-server.list
+    - /etc/apt/sources.list.d/packagecloud_io_rabbitmq_rabbitmq_server_ubuntu.list
+
+- name: Update apt cache after removing repositories
+  apt:
+    update_cache: yes
+
+- name: Install Erlang and RabbitMQ from Ubuntu repository
+  apt:
+    name:
+      - erlang
+      - rabbitmq-server=3.12.1-1ubuntu1
+    state: present
+    update_cache: yes
+
+- name: Enable RabbitMQ management plugin
+  rabbitmq_plugin:
+    names: rabbitmq_management
+    state: enabled
+
+- name: Configure RabbitMQ
+  template:
+    src: rabbitmq.conf.j2
+    dest: /etc/rabbitmq/rabbitmq.conf
+    owner: rabbitmq
+    group: rabbitmq
+    mode: '0644'
+  notify: restart rabbitmq
+
+- name: Start and enable RabbitMQ service
+  systemd:
+    name: rabbitmq-server
+    state: started
+    enabled: yes
+
+- name: Create RabbitMQ admin user
+  rabbitmq_user:
+    user: "{{ rabbitmq_admin_user }}"
+    password: "{{ rabbitmq_admin_password }}"
+    vhost: /
+    configure_priv: .*
+    read_priv: .*
+    write_priv: .*
+    tags: administrator
+    state: present
+  when: rabbitmq_admin_user is defined and rabbitmq_admin_password is defined
+
+- name: Create RabbitMQ application vhost
+  rabbitmq_vhost:
+    name: "{{ rabbitmq_vhost }}"
+    state: present
+  when: rabbitmq_vhost is defined
+
+- name: Create RabbitMQ application user
+  rabbitmq_user:
+    user: "{{ rabbitmq_app_user }}"
+    password: "{{ rabbitmq_app_password }}"
+    vhost: "{{ rabbitmq_vhost | default('/') }}"
+    configure_priv: .*
+    read_priv: .*
+    write_priv: .*
+    state: present
+  when: rabbitmq_app_user is defined and rabbitmq_app_password is defined
+
+- name: Allow RabbitMQ through UFW
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  with_items:
+    - "{{ rabbitmq_port }}"
+    - "{{ rabbitmq_management_port }}" 

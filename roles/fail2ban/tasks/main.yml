@@ -1,0 +1,47 @@
+---
+# fail2ban installation and configuration tasks
+
+- name: Install fail2ban
+  apt:
+    name: fail2ban
+    state: latest
+    update_cache: yes
+
+- name: Create fail2ban configuration directory
+  file:
+    path: /etc/fail2ban/jail.d
+    state: directory
+    mode: '0755'
+
+- name: Configure fail2ban
+  template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart fail2ban
+
+- name: Configure SSH jail
+  template:
+    src: sshd.conf.j2
+    dest: /etc/fail2ban/jail.d/sshd.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart fail2ban
+
+- name: Configure Nginx jail
+  template:
+    src: nginx.conf.j2
+    dest: /etc/fail2ban/jail.d/nginx.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart fail2ban
+
+- name: Start and enable fail2ban service
+  systemd:
+    name: fail2ban
+    state: started
+    enabled: yes 

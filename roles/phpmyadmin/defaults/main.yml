@@ -1,0 +1,5 @@
+---
+# phpMyAdmin default variables
+phpmyadmin_server_name: "pma.{{ ansible_fqdn }}"
+phpmyadmin_blowfish_secret: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=32') }}"
+phpmyadmin_allow_from: "127.0.0.1 ::1" 

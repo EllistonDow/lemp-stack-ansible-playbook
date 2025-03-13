@@ -1,0 +1,143 @@
+vcl 4.1;
+
+import std;
+import directors;
+
+# Default backend definition
+backend default {
+    .host = "{{ varnish_backend_host }}";
+    .port = "{{ varnish_backend_port }}";
+    .connect_timeout = 5s;
+    .first_byte_timeout = 90s;
+    .between_bytes_timeout = 2s;
+    .max_connections = 300;
+}
+
+# ACL for purge requests
+acl purge {
+    "localhost";
+    "127.0.0.1";
+    "::1";
+}
+
+sub vcl_recv {
+    # Normalize the Host header
+    if (req.http.host) {
+        set req.http.host = regsub(req.http.host, ":[0-9]+", "");
+    }
+
+    # Normalize the URL
+    set req.url = std.querysort(req.url);
+
+    # Handle PURGE requests
+    if (req.method == "PURGE") {
+        if (!client.ip ~ purge) {
+            return (synth(405, "Method not allowed"));
+        }
+        return (purge);
+    }
+
+    # Only cache GET and HEAD requests
+    if (req.method != "GET" && req.method != "HEAD") {
+        return (pass);
+    }
+
+    # Don't cache authenticated requests
+    if (req.http.Authorization || req.http.Cookie ~ "session" || req.http.Cookie ~ "PHPSESSID") {
+        return (pass);
+    }
+
+    # Strip cookies for static files
+    if (req.url ~ "\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|otf)$") {
+        unset req.http.Cookie;
+    }
+
+    # Remove some headers we don't need
+    unset req.http.Accept-Encoding;
+    unset req.http.User-Agent;
+
+    return (hash);
+}
+
+sub vcl_hash {
+    # Hash based on the URL and host
+    hash_data(req.url);
+    hash_data(req.http.host);
+
+    # If there's a Cookie header, hash it too
+    if (req.http.Cookie) {
+        hash_data(req.http.Cookie);
+    }
+
+    return (lookup);
+}
+
+sub vcl_backend_response {
+    # Set default TTL if none is set
+    if (beresp.ttl <= 0s) {
+        set beresp.ttl = {{ varnish_ttl }};
+        set beresp.grace = 1h;
+        set beresp.keep = 24h;
+    }
+
+    # Don't cache 5xx responses
+    if (beresp.status >= 500 && beresp.status < 600) {
+        set beresp.ttl = 0s;
+        set beresp.grace = 0s;
+        return (deliver);
+    }
+
+    # Strip cookies for static files
+    if (bereq.url ~ "\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|otf)$") {
+        unset beresp.http.Set-Cookie;
+    }
+
+    # Enable gzip for text-based content
+    if (beresp.http.content-type ~ "text" || beresp.http.content-type ~ "json" || beresp.http.content-type ~ "xml") {
+        set beresp.do_gzip = true;
+    }
+
+    return (deliver);
+}
+
+sub vcl_deliver {
+    # Add debug headers if needed
+    if (obj.hits > 0) {
+        set resp.http.X-Cache = "HIT";
+        set resp.http.X-Cache-Hits = obj.hits;
+    } else {
+        set resp.http.X-Cache = "MISS";
+    }
+
+    # Remove some headers we don't want to send to clients
+    unset resp.http.Via;
+    unset resp.http.X-Varnish;
+    unset resp.http.Server;
+
+    return (deliver);
+}
+
+sub vcl_purge {
+    return (synth(200, "Purged"));
+}
+
+sub vcl_synth {
+    set resp.http.Content-Type = "text/html; charset=utf-8";
+    set resp.http.Retry-After = "5";
+
+    synthetic( {"<!DOCTYPE html>
+<html>
+  <head>
+    <title>"} + resp.status + " " + resp.reason + {"</title>
+  </head>
+  <body>
+    <h1>Error "} + resp.status + " " + resp.reason + {"</h1>
+    <p>"} + resp.reason + {"</p>
+    <h3>Guru Meditation:</h3>
+    <p>XID: "} + req.xid + {"</p>
+  </body>
+</html>
+"} );
+
+    return (deliver);
+} 

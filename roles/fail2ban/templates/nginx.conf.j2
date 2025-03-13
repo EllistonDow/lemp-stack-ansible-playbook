@@ -1,0 +1,6 @@
+[nginx-http-auth]
+enabled = {{ fail2ban_nginx_enabled | lower }}
+port = {{ fail2ban_nginx_port }}
+filter = {{ fail2ban_nginx_filter }}
+logpath = {{ fail2ban_nginx_logpath }}
+maxretry = {{ fail2ban_nginx_maxretry }} 

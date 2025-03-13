@@ -1,0 +1,32 @@
+---
+# Common tasks for all servers
+
+- name: Install common packages
+  apt:
+    name:
+      - software-properties-common
+      - curl
+      - wget
+      - vim
+      - git
+      - unzip
+      - htop
+      - net-tools
+      - ufw
+    state: present
+    update_cache: yes
+
+- name: Configure UFW
+  ufw:
+    state: enabled
+    policy: deny
+    logging: on
+
+- name: Allow SSH through UFW
+  ufw:
+    rule: allow
+    name: OpenSSH
+
+- name: Set timezone
+  timezone:
+    name: "{{ timezone | default('UTC') }}" 

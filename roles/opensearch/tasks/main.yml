@@ -1,0 +1,78 @@
+---
+# OpenSearch installation and configuration tasks
+
+- name: Install required packages
+  apt:
+    name:
+      - apt-transport-https
+      - gnupg
+      - ca-certificates
+      - openjdk-17-jdk
+    state: present
+    update_cache: yes
+
+- name: Add OpenSearch apt key
+  apt_key:
+    url: https://artifacts.opensearch.org/publickeys/opensearch.pgp
+    state: present
+
+- name: Add OpenSearch repository
+  apt_repository:
+    repo: "deb https://artifacts.opensearch.org/releases/bundle/opensearch/2.x/apt stable main"
+    state: present
+    update_cache: yes
+
+- name: Create OpenSearch directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  with_items:
+    - /var/run/opensearch
+    - /var/lib/opensearch
+    - /var/log/opensearch
+
+- name: Install OpenSearch
+  apt:
+    name: opensearch=2.12.0
+    state: present
+    update_cache: yes
+  environment:
+    OPENSEARCH_INITIAL_ADMIN_PASSWORD: "{{ opensearch_admin_password | default('StrongAdminPassword123!') }}"
+  ignore_errors: yes
+
+- name: Configure OpenSearch
+  template:
+    src: opensearch.yml.j2
+    dest: /etc/opensearch/opensearch.yml
+    owner: root
+    group: opensearch
+    mode: '0640'
+  notify: restart opensearch
+  ignore_errors: yes
+
+- name: Configure JVM options
+  template:
+    src: jvm.options.j2
+    dest: /etc/opensearch/jvm.options
+    owner: root
+    group: opensearch
+    mode: '0640'
+  notify: restart opensearch
+  ignore_errors: yes
+
+- name: Start and enable OpenSearch service
+  systemd:
+    name: opensearch
+    state: started
+    enabled: yes
+  ignore_errors: yes
+
+- name: Allow OpenSearch through UFW
+  ufw:
+    rule: allow
+    port: 9200
+    proto: tcp
+  ignore_errors: yes 

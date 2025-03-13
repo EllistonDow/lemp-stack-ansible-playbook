@@ -1,0 +1,28 @@
+---
+# fail2ban default variables
+fail2ban_loglevel: INFO
+fail2ban_logtarget: /var/log/fail2ban.log
+fail2ban_socket: /var/run/fail2ban/fail2ban.sock
+
+# Default jail settings
+fail2ban_ignoreip: 127.0.0.1/8 ::1
+fail2ban_bantime: 1h
+fail2ban_findtime: 10m
+fail2ban_maxretry: 5
+fail2ban_backend: auto
+fail2ban_banaction: iptables-multiport
+fail2ban_banaction_allports: iptables-allports
+
+# SSH jail settings
+fail2ban_ssh_enabled: true
+fail2ban_ssh_port: ssh
+fail2ban_ssh_filter: sshd
+fail2ban_ssh_logpath: /var/log/auth.log
+fail2ban_ssh_maxretry: 5
+
+# Nginx jail settings
+fail2ban_nginx_enabled: true
+fail2ban_nginx_port: http,https
+fail2ban_nginx_filter: nginx-http-auth
+fail2ban_nginx_logpath: /var/log/nginx/error.log
+fail2ban_nginx_maxretry: 5 

@@ -1,0 +1,77 @@
+# Redis configuration file
+
+# Network
+bind {{ redis_bind_interface }}
+protected-mode yes
+port {{ redis_port }}
+tcp-backlog 511
+timeout 0
+tcp-keepalive 300
+
+# General
+daemonize yes
+supervised systemd
+pidfile /var/run/redis/redis-server.pid
+loglevel notice
+logfile /var/log/redis/redis-server.log
+databases {{ redis_databases }}
+
+# Snapshotting
+{% if redis_save_to_disk %}
+{% for save_point in redis_save_points %}
+save {{ save_point[0] }} {{ save_point[1] }}
+{% endfor %}
+{% else %}
+save ""
+{% endif %}
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+dir /var/lib/redis
+
+# Memory Management
+maxmemory {{ redis_max_memory }}
+maxmemory-policy {{ redis_max_memory_policy }}
+maxmemory-samples 5
+
+# Append Only Mode
+appendonly no
+appendfilename "appendonly.aof"
+appendfsync everysec
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+aof-load-truncated yes
+
+# LUA Scripting
+lua-time-limit 5000
+
+# Redis Cluster
+cluster-enabled no
+
+# Slow Log
+slowlog-log-slower-than 10000
+slowlog-max-len 128
+
+# Latency Monitor
+latency-monitor-threshold 0
+
+# Event Notification
+notify-keyspace-events ""
+
+# Advanced Config
+hash-max-ziplist-entries 512
+hash-max-ziplist-value 64
+list-max-ziplist-size -2
+list-compress-depth 0
+set-max-intset-entries 512
+zset-max-ziplist-entries 128
+zset-max-ziplist-value 64
+hll-sparse-max-bytes 3000
+activerehashing yes
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit slave 256mb 64mb 60
+client-output-buffer-limit pubsub 32mb 8mb 60
+hz 10
+aof-rewrite-incremental-fsync yes 
