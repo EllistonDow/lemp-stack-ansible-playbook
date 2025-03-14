@@ -1,0 +1,109 @@
+---
+# Playbook to fix OpenSearch JVM configuration
+
+- name: Fix OpenSearch JVM configuration
+  hosts: all
+  become: yes
+  tasks:
+    - name: Display start message
+      debug:
+        msg: "===== 开始修复 OpenSearch JVM 配置 ====="
+
+    - name: Stop OpenSearch service
+      systemd:
+        name: opensearch
+        state: stopped
+      ignore_errors: yes
+
+    - name: Check system memory
+      shell: free -m | grep Mem | awk '{print $2}'
+      register: system_memory
+      changed_when: false
+
+    - name: Display system memory
+      debug:
+        msg: "System memory: {{ system_memory.stdout }}MB"
+
+    - name: Calculate appropriate heap size (half of system memory, max 31GB)
+      set_fact:
+        heap_size_mb: "{{ (system_memory.stdout|int / 2)|int }}"
+        max_heap_mb: 31744  # 31GB in MB
+
+    - name: Set final heap size (capped at 31GB)
+      set_fact:
+        final_heap_mb: "{{ [heap_size_mb|int, max_heap_mb|int] | min }}"
+
+    - name: Display calculated heap size
+      debug:
+        msg: "Setting OpenSearch heap size to {{ final_heap_mb }}MB ({{ (final_heap_mb|int / 1024)|int }}GB)"
+
+    - name: Fix OpenSearch JVM configuration
+      copy:
+        dest: /etc/opensearch/jvm.options
+        content: |
+          ## JVM configuration
+
+          ################################################################
+          ## IMPORTANT: JVM heap size
+          ################################################################
+          -Xms{{ final_heap_mb }}m
+          -Xmx{{ final_heap_mb }}m
+
+          ################################################################
+          ## Expert settings
+          ################################################################
+          ## GC configuration
+          8-13:-XX:+UseConcMarkSweepGC
+          8-13:-XX:CMSInitiatingOccupancyFraction=75
+          8-13:-XX:+UseCMSInitiatingOccupancyOnly
+
+          ## G1GC Configuration
+          14-:-XX:+UseG1GC
+          14-:-XX:G1ReservePercent=25
+          14-:-XX:InitiatingHeapOccupancyPercent=30
+
+          ## JVM temporary directory
+          -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
+
+          ## heap dumps
+
+          # generate a heap dump when an allocation from the Java heap fails
+          # heap dumps are created in the working directory of the JVM
+          -XX:+HeapDumpOnOutOfMemoryError
+
+          # specify an alternative path for heap dumps; ensure the directory exists and
+          # has sufficient space
+          -XX:HeapDumpPath=/var/lib/opensearch
+
+          # specify an alternative path for JVM fatal error logs
+          -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
+
+          # Explicitly allow security manager (for Java 17 compatibility)
+          17-:-Djava.security.manager=allow
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    - name: Set correct permissions for OpenSearch directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+        recurse: yes
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+      ignore_errors: yes
+
+    - name: Start OpenSearch service
+      systemd:
+        name: opensearch
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    - name: Display completion message
+      debug:
+        msg: "===== OpenSearch JVM 配置修复完成 ====="

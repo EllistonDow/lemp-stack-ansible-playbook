@@ -1,7 +1,7 @@
 ---
 # Percona Server installation and configuration tasks
 
-- name: Install required packages for Percona repository
+- name: Install required packages
   apt:
     name:
       - gnupg2
@@ -32,6 +32,46 @@
   apt:
     update_cache: yes
 
+# 确保 /etc/mysql 目录存在
+- name: Ensure MySQL configuration directory exists
+  file:
+    path: /etc/mysql
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# 备份原始配置文件（如果存在）
+- name: Backup original my.cnf if it exists
+  copy:
+    src: /etc/mysql/my.cnf
+    dest: /etc/mysql/my.cnf.original
+    remote_src: yes
+  ignore_errors: yes
+
+# 正确处理 my.cnf 替代项
+- name: Check if my.cnf is in alternatives system
+  command: update-alternatives --display my.cnf
+  register: alternatives_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Configure my.cnf in alternatives system if not already
+  command: update-alternatives --install /etc/my.cnf my.cnf /etc/mysql/my.cnf 100
+  when: alternatives_check.rc != 0
+  ignore_errors: yes
+
+# 创建默认的 MYSQLD_OPTS 环境变量文件
+- name: Create MySQL default environment file
+  copy:
+    dest: /etc/default/mysql
+    content: |
+      # Default options for MySQL
+      MYSQLD_OPTS="--user=mysql"
+    mode: '0644'
+    owner: root
+    group: root
+
 - name: Install Percona Server
   apt:
     name:
@@ -50,6 +90,51 @@
     group: root
     mode: '0644'
   notify: restart mysql
+
+# 修复 MySQL 服务单元文件
+- name: Fix MySQL service unit file
+  copy:
+    dest: /usr/lib/systemd/system/mysql.service
+    content: |
+      #
+      # Percona Server systemd service file
+      #
+      
+      [Unit]
+      Description=Percona Server
+      After=network.target
+      After=local-fs.target remote-fs.target
+      Requires=local-fs.target remote-fs.target
+      
+      [Install]
+      WantedBy=multi-user.target
+      
+      [Service]
+      User=mysql
+      Group=mysql
+      Type=notify
+      PermissionsStartOnly=true
+      ExecStartPre=/usr/share/mysql/mysql-systemd-start pre
+      EnvironmentFile=-/etc/default/mysql
+      ExecStart=/usr/sbin/mysqld --user=mysql
+      TimeoutSec=600
+      LimitNOFILE = 10000
+      Restart=on-failure
+      RestartPreventExitStatus=1
+      # Always restart when mysqld exits with exit code of 16. This special exit code
+      # is used by mysqld for RESTART SQL.
+      RestartForceExitStatus=16
+      # Set enviroment variable MYSQLD_PARENT_PID. This is required for restart.
+      Environment=MYSQLD_PARENT_PID=1
+      RuntimeDirectory=mysqld
+      RuntimeDirectoryMode=755
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
 
 - name: Start and enable MySQL service
   systemd:

@@ -26,6 +26,39 @@
     creates: /etc/apt/sources.list.d/ondrej-ubuntu-php-*.list
   when: ansible_distribution_release == "noble"
 
+# 设置 APT 偏好，确保只安装 PHP 8.3
+- name: Configure APT preferences for PHP 8.3
+  copy:
+    dest: /etc/apt/preferences.d/php
+    content: |
+      Package: php*
+      Pin: release *
+      Pin-Priority: 100
+
+      Package: php8.3*
+      Pin: release *
+      Pin-Priority: 900
+
+      Package: php8.4*
+      Pin: release *
+      Pin-Priority: -1
+    mode: '0644'
+
+# 卸载 PHP 8.4（如果已安装）
+- name: Check if PHP 8.4 is installed
+  shell: dpkg -l | grep -q "php8.4"
+  register: php84_check
+  failed_when: false
+  changed_when: false
+
+- name: Remove PHP 8.4 if installed
+  apt:
+    name: "php8.4*"
+    state: absent
+    purge: yes
+  when: php84_check.rc == 0
+  ignore_errors: yes
+
 - name: Install PHP and extensions
   apt:
     name:
@@ -91,4 +124,12 @@
   systemd:
     name: php8.3-fpm
     state: started
-    enabled: yes 
+    enabled: yes
+
+# 创建 PHP 命令的符号链接
+- name: Create PHP symlinks
+  file:
+    src: "/usr/bin/php8.3"
+    dest: "/usr/bin/php"
+    state: link
+  ignore_errors: yes 

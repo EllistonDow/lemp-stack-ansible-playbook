@@ -1,0 +1,9 @@
+---
+# Playbook to uninstall Percona Server
+
+- name: Uninstall Percona Server
+  hosts: all
+  become: yes
+  tasks:
+    - name: Include Percona uninstall tasks
+      include_tasks: roles/percona/tasks/uninstall.yml 

@@ -44,6 +44,26 @@
     update_cache: yes
   when: ansible_distribution_release == "noble"
 
+# Create Varnish secret file
+- name: Check if Varnish secret file exists
+  stat:
+    path: /etc/varnish/secret
+  register: varnish_secret_file
+
+- name: Create Varnish secret file
+  shell: dd if=/dev/random of=/etc/varnish/secret count=1 bs=512
+  args:
+    creates: /etc/varnish/secret
+  when: not varnish_secret_file.stat.exists
+
+- name: Set permissions on Varnish secret file
+  file:
+    path: /etc/varnish/secret
+    mode: '0600'
+    owner: root
+    group: root
+  when: not varnish_secret_file.stat.exists
+
 - name: Configure Varnish service
   template:
     src: varnish.service.j2

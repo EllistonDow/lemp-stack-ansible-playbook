@@ -29,8 +29,16 @@
   apt_key:
     url: https://nginx.org/keys/nginx_signing.key
     state: present
+  ignore_errors: yes
 
 - name: Add Nginx repository
+  apt_repository:
+    repo: "deb http://nginx.org/packages/ubuntu {{ ansible_distribution_release }} nginx"
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+- name: Add Nginx 1.26 repository
   apt_repository:
     repo: "deb http://nginx.org/packages/ubuntu {{ ansible_distribution_release }} nginx"
     state: present
@@ -87,7 +95,7 @@
 # Install Nginx with dynamic modules support
 - name: Install Nginx
   apt:
-    name: nginx=1.24.0-2ubuntu7.1
+    name: nginx=1.26.0*
     state: present
     update_cache: yes
     force: yes
@@ -97,7 +105,7 @@
 
 - name: Install Nginx (alternative)
   apt:
-    name: nginx
+    name: nginx=1.26.0*
     state: present
     update_cache: yes
   when: ansible_distribution_release == "noble"
@@ -214,7 +222,6 @@
     path: /etc/nginx/modsecurity/modsecurity.conf
     regexp: '^SecRuleEngine DetectionOnly'
     line: 'SecRuleEngine On'
-  when: modsec_cloned.changed
   ignore_errors: yes
 
 - name: Create unicode.mapping file
@@ -225,7 +232,6 @@
     owner: root
     group: root
     mode: '0644'
-  when: modsec_cloned.changed
   ignore_errors: yes
 
 - name: Clean OWASP CRS directory if exists
@@ -338,4 +344,39 @@
       # ModSecurity
       modsecurity on;
       modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
-  ignore_errors: yes 
+  ignore_errors: yes
+
+# Add Varnish proxy configuration
+- name: Create Varnish proxy configuration
+  template:
+    src: varnish_proxy.conf.j2
+    dest: /etc/nginx/sites-available/varnish_proxy
+    owner: root
+    group: root
+    mode: '0644'
+  when: "'varnish' in groups and groups['varnish']|length > 0"
+  notify: restart nginx
+
+- name: Enable Varnish proxy configuration
+  file:
+    src: /etc/nginx/sites-available/varnish_proxy
+    dest: /etc/nginx/sites-enabled/varnish_proxy
+    state: link
+  when: "'varnish' in groups and groups['varnish']|length > 0"
+  notify: restart nginx
+
+- name: Modify default Nginx site to listen on 8080
+  replace:
+    path: /etc/nginx/sites-available/default
+    regexp: 'listen 80 default_server;'
+    replace: 'listen 8080 default_server;'
+  when: "'varnish' in groups and groups['varnish']|length > 0"
+  notify: restart nginx
+
+- name: Modify default Nginx site to listen on 8080 (IPv6)
+  replace:
+    path: /etc/nginx/sites-available/default
+    regexp: 'listen \[::\]:80 default_server;'
+    replace: 'listen [::]:8080 default_server;'
+  when: "'varnish' in groups and groups['varnish']|length > 0"
+  notify: restart nginx 

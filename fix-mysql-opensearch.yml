@@ -1,0 +1,158 @@
+---
+# Playbook to fix MySQL and OpenSearch issues
+
+- name: Fix MySQL and OpenSearch issues
+  hosts: all
+  become: yes
+  tasks:
+    - name: Display start message
+      debug:
+        msg: "===== 开始修复 MySQL 和 OpenSearch 问题 ====="
+
+    # 修复 MySQL 问题
+    - name: Stop MySQL service
+      systemd:
+        name: mysql
+        state: stopped
+      ignore_errors: yes
+
+    - name: Create MySQL default environment file
+      copy:
+        dest: /etc/default/mysql
+        content: |
+          # Default options for MySQL
+          MYSQLD_OPTS="--user=mysql"
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Fix MySQL configuration
+      template:
+        src: roles/percona/templates/my.cnf.j2
+        dest: /etc/mysql/my.cnf
+        owner: root
+        group: root
+        mode: '0644'
+      vars:
+        mysql_max_connections: 151
+        mysql_innodb_buffer_pool_size: "256M"
+        mysql_innodb_log_file_size: "64M"
+        mysql_innodb_flush_log_at_trx_commit: 1
+        mysql_character_set_server: "utf8mb4"
+        mysql_collation_server: "utf8mb4_unicode_ci"
+
+    # 修复 MySQL 服务单元文件
+    - name: Fix MySQL service unit file
+      copy:
+        dest: /usr/lib/systemd/system/mysql.service
+        content: |
+          #
+          # Percona Server systemd service file
+          #
+          
+          [Unit]
+          Description=Percona Server
+          After=network.target
+          After=local-fs.target remote-fs.target
+          Requires=local-fs.target remote-fs.target
+          
+          [Install]
+          WantedBy=multi-user.target
+          
+          [Service]
+          User=mysql
+          Group=mysql
+          Type=notify
+          PermissionsStartOnly=true
+          ExecStartPre=/usr/share/mysql/mysql-systemd-start pre
+          EnvironmentFile=-/etc/default/mysql
+          ExecStart=/usr/sbin/mysqld --user=mysql
+          TimeoutSec=600
+          LimitNOFILE = 10000
+          Restart=on-failure
+          RestartPreventExitStatus=1
+          # Always restart when mysqld exits with exit code of 16. This special exit code
+          # is used by mysqld for RESTART SQL.
+          RestartForceExitStatus=16
+          # Set enviroment variable MYSQLD_PARENT_PID. This is required for restart.
+          Environment=MYSQLD_PARENT_PID=1
+          RuntimeDirectory=mysqld
+          RuntimeDirectoryMode=755
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Start MySQL service
+      systemd:
+        name: mysql
+        state: started
+      ignore_errors: yes
+
+    # 修复 OpenSearch 问题
+    - name: Stop OpenSearch service
+      systemd:
+        name: opensearch
+        state: stopped
+      ignore_errors: yes
+
+    - name: Check system memory
+      shell: free -m | grep Mem | awk '{print $2}'
+      register: system_memory
+      changed_when: false
+
+    - name: Remove existing OpenSearch configuration
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /etc/opensearch/opensearch.yml
+        - /etc/opensearch/jvm.options
+        - /var/log/opensearch/install_demo_configuration.log
+      ignore_errors: yes
+
+    - name: Configure OpenSearch
+      template:
+        src: roles/opensearch/templates/opensearch.yml.j2
+        dest: /etc/opensearch/opensearch.yml
+        owner: root
+        group: opensearch
+        mode: '0640'
+      ignore_errors: yes
+
+    - name: Configure JVM options
+      template:
+        src: roles/opensearch/templates/jvm.options.j2
+        dest: /etc/opensearch/jvm.options
+        owner: root
+        group: opensearch
+        mode: '0640'
+      vars:
+        opensearch_heap_size: "{{ (system_memory.stdout|int / 4)|int|default(1, true) }}g"
+      ignore_errors: yes
+
+    - name: Set correct permissions for OpenSearch directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+        recurse: yes
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+      ignore_errors: yes
+
+    - name: Start OpenSearch service
+      systemd:
+        name: opensearch
+        state: started
+      ignore_errors: yes
+
+    - name: Display completion message
+      debug:
+        msg: "===== MySQL 和 OpenSearch 问题修复完成 =====" 

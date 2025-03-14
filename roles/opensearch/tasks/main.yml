@@ -34,6 +34,35 @@
     - /var/lib/opensearch
     - /var/log/opensearch
 
+# 检查系统内存
+- name: Check system memory
+  shell: free -m | grep Mem | awk '{print $2}'
+  register: system_memory
+  changed_when: false
+
+- name: Warn if system memory is low
+  debug:
+    msg: "WARNING: System memory ({{ system_memory.stdout }}MB) is less than recommended 4GB for OpenSearch. Performance may be affected."
+  when: system_memory.stdout|int < 4000
+
+# 完全清理现有的 OpenSearch 配置
+- name: Stop OpenSearch service if running
+  systemd:
+    name: opensearch
+    state: stopped
+  ignore_errors: yes
+
+- name: Remove existing OpenSearch configuration
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /etc/opensearch/opensearch.yml
+    - /etc/opensearch/jvm.options
+    - /var/log/opensearch/install_demo_configuration.log
+  ignore_errors: yes
+
+# 安装 OpenSearch
 - name: Install OpenSearch
   apt:
     name: opensearch=2.12.0
@@ -41,8 +70,20 @@
     update_cache: yes
   environment:
     OPENSEARCH_INITIAL_ADMIN_PASSWORD: "{{ opensearch_admin_password | default('StrongAdminPassword123!') }}"
+    DISABLE_INSTALL_DEMO_CONFIG: "true"
+    DISABLE_SECURITY_PLUGIN: "true"
   ignore_errors: yes
 
+# 确保配置目录存在
+- name: Ensure OpenSearch configuration directory exists
+  file:
+    path: /etc/opensearch
+    state: directory
+    owner: root
+    group: opensearch
+    mode: '0750'
+
+# 配置 OpenSearch
 - name: Configure OpenSearch
   template:
     src: opensearch.yml.j2
@@ -61,6 +102,33 @@
     group: opensearch
     mode: '0640'
   notify: restart opensearch
+  ignore_errors: yes
+
+# 调整 JVM 堆大小
+- name: Adjust JVM heap size based on system memory
+  lineinfile:
+    path: /etc/opensearch/jvm.options
+    regexp: '^-Xm(s|x)[0-9]+g'
+    line: '-Xm{{ item.type }}{{ item.value }}g'
+  with_items:
+    - { type: 's', value: "{{ (system_memory.stdout|int / 2048)|int|default(1, true) }}" }
+    - { type: 'x', value: "{{ (system_memory.stdout|int / 2048)|int|default(1, true) }}" }
+  when: system_memory.stdout|int < 4000
+  notify: restart opensearch
+  ignore_errors: yes
+
+# 确保数据和日志目录权限正确
+- name: Set correct permissions for OpenSearch directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: opensearch
+    group: opensearch
+    mode: '0750'
+    recurse: yes
+  with_items:
+    - /var/lib/opensearch
+    - /var/log/opensearch
   ignore_errors: yes
 
 - name: Start and enable OpenSearch service

@@ -1,0 +1,197 @@
+---
+# 综合修复 playbook - 修复 MySQL 和 OpenSearch 配置
+
+- name: 综合修复 MySQL 和 OpenSearch
+  hosts: all
+  become: yes
+  tasks:
+    - name: 显示开始信息
+      debug:
+        msg: "===== 开始综合修复 MySQL 和 OpenSearch ====="
+
+    # MySQL 修复部分
+    - name: 停止 MySQL 服务
+      systemd:
+        name: mysql
+        state: stopped
+      ignore_errors: yes
+
+    - name: 创建 MySQL 默认环境文件
+      copy:
+        dest: /etc/default/mysql
+        content: "MYSQLD_OPTS=\"--user=mysql\""
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: 修复 MySQL 服务单元文件
+      copy:
+        dest: /usr/lib/systemd/system/mysql.service
+        content: |
+          [Unit]
+          Description=Percona Server
+          Documentation=man:mysqld(8)
+          Documentation=http://dev.mysql.com/doc/refman/en/using-systemd.html
+          After=network.target
+
+          [Service]
+          User=mysql
+          Group=mysql
+          Type=notify
+          ExecStart=/usr/sbin/mysqld --user=mysql
+          TimeoutSec=0
+          PermissionsStartOnly=true
+          LimitNOFILE=10000
+          Environment=MYSQLD_PARENT_PID=1
+          Restart=on-failure
+          RestartPreventExitStatus=1
+
+          # Set enviroment variable MYSQLD_OPTS to the empty value by default.
+          # This is used to provide additional options to mysqld.
+          EnvironmentFile=-/etc/default/mysql
+
+          # Disable OOM kill on the mysqld process
+          OOMScoreAdjust=-1000
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: 重新加载 systemd 守护进程
+      systemd:
+        daemon_reload: yes
+
+    - name: 启动 MySQL 服务
+      systemd:
+        name: mysql
+        state: started
+        enabled: yes
+
+    # OpenSearch 修复部分
+    - name: 停止 OpenSearch 服务
+      systemd:
+        name: opensearch
+        state: stopped
+      ignore_errors: yes
+
+    - name: 检查系统内存
+      shell: free -m | grep Mem | awk '{print $2}'
+      register: system_memory
+      changed_when: false
+
+    - name: 显示系统内存
+      debug:
+        msg: "系统内存: {{ system_memory.stdout }}MB"
+
+    - name: 计算适当的堆大小（系统内存的一半，最大 31GB）
+      set_fact:
+        heap_size_mb: "{{ (system_memory.stdout|int / 2)|int }}"
+        max_heap_mb: 31744  # 31GB in MB
+
+    - name: 设置最终堆大小（上限为 31GB）
+      set_fact:
+        final_heap_mb: "{{ [heap_size_mb|int, max_heap_mb|int] | min }}"
+
+    - name: 显示计算的堆大小
+      debug:
+        msg: "设置 OpenSearch 堆大小为 {{ final_heap_mb }}MB ({{ (final_heap_mb|int / 1024)|int }}GB)"
+
+    - name: 删除现有的 OpenSearch 配置文件
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /etc/opensearch/opensearch.yml
+        - /etc/opensearch/jvm.options
+      ignore_errors: yes
+
+    - name: 修复 OpenSearch JVM 配置
+      copy:
+        dest: /etc/opensearch/jvm.options
+        content: |
+          ## JVM configuration
+
+          ################################################################
+          ## IMPORTANT: JVM heap size
+          ################################################################
+          -Xms{{ final_heap_mb }}m
+          -Xmx{{ final_heap_mb }}m
+
+          ################################################################
+          ## Expert settings
+          ################################################################
+          ## GC configuration
+          8-13:-XX:+UseConcMarkSweepGC
+          8-13:-XX:CMSInitiatingOccupancyFraction=75
+          8-13:-XX:+UseCMSInitiatingOccupancyOnly
+
+          ## G1GC Configuration
+          14-:-XX:+UseG1GC
+          14-:-XX:G1ReservePercent=25
+          14-:-XX:InitiatingHeapOccupancyPercent=30
+
+          ## JVM temporary directory
+          -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
+
+          ## heap dumps
+
+          # generate a heap dump when an allocation from the Java heap fails
+          # heap dumps are created in the working directory of the JVM
+          -XX:+HeapDumpOnOutOfMemoryError
+
+          # specify an alternative path for heap dumps; ensure the directory exists and
+          # has sufficient space
+          -XX:HeapDumpPath=/var/lib/opensearch
+
+          # specify an alternative path for JVM fatal error logs
+          -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
+
+          # Explicitly allow security manager (for Java 17 compatibility)
+          17-:-Djava.security.manager=allow
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    - name: 创建 OpenSearch 配置文件
+      copy:
+        dest: /etc/opensearch/opensearch.yml
+        content: |
+          # OpenSearch 配置文件
+          cluster.name: opensearch-cluster
+          node.name: node-1
+          path.data: /var/lib/opensearch
+          path.logs: /var/log/opensearch
+          network.host: 0.0.0.0
+          http.port: 9200
+          discovery.type: single-node
+          
+          # 安全设置
+          plugins.security.disabled: true
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    - name: 设置 OpenSearch 目录的正确权限
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+        recurse: yes
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+      ignore_errors: yes
+
+    - name: 启动 OpenSearch 服务
+      systemd:
+        name: opensearch
+        state: started
+        enabled: yes
+
+    - name: 显示完成信息
+      debug:
+        msg: "===== MySQL 和 OpenSearch 综合修复完成 =====" 

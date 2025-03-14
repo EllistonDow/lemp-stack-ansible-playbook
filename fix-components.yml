@@ -1,0 +1,151 @@
+---
+# Playbook to fix Percona and OpenSearch components
+
+- name: Fix Percona and OpenSearch components
+  hosts: all
+  become: yes
+  tasks:
+    - name: Display start message
+      debug:
+        msg: "===== 开始修复组件安装 ====="
+
+    # 检查系统内存
+    - name: Check system memory
+      shell: free -m | grep Mem | awk '{print $2}'
+      register: system_memory
+      changed_when: false
+
+    - name: Display system memory
+      debug:
+        msg: "System memory: {{ system_memory.stdout }}MB"
+
+    # 清理 Percona MySQL
+    - name: Stop MySQL service
+      systemd:
+        name: mysql
+        state: stopped
+      ignore_errors: yes
+
+    - name: Remove Percona packages
+      apt:
+        name: "percona-server*"
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Clean MySQL directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /etc/mysql
+        - /var/lib/mysql
+      ignore_errors: yes
+
+    # 清理 OpenSearch
+    - name: Stop OpenSearch service
+      systemd:
+        name: opensearch
+        state: stopped
+      ignore_errors: yes
+
+    - name: Remove OpenSearch packages
+      apt:
+        name: opensearch
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Clean OpenSearch directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /etc/opensearch
+        - /var/lib/opensearch
+        - /var/log/opensearch/install_demo_configuration.log
+      ignore_errors: yes
+
+    - name: Clean apt cache
+      apt:
+        autoclean: yes
+        autoremove: yes
+      ignore_errors: yes
+
+    - name: Display reinstall message
+      debug:
+        msg: "正在重新安装组件..."
+
+    # 设置 OpenSearch 变量
+    - name: Set OpenSearch variables
+      set_fact:
+        opensearch_heap_size: "{{ (system_memory.stdout|int / 4)|int|default(1, true) }}g"
+        opensearch_security_enabled: false
+
+    # 重新安装组件
+    - name: Create MySQL default environment file
+      copy:
+        dest: /etc/default/mysql
+        content: |
+          # Default options for MySQL
+          MYSQLD_OPTS="--user=mysql"
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Include Percona role
+      include_role:
+        name: percona
+
+    - name: Include OpenSearch role
+      include_role:
+        name: opensearch
+
+    # 修复可能的服务问题
+    - name: Fix MySQL service if needed
+      block:
+        - name: Check MySQL service status
+          command: systemctl status mysql
+          register: mysql_status
+          failed_when: false
+          changed_when: false
+
+        - name: Fix MySQL service unit file if needed
+          lineinfile:
+            path: /usr/lib/systemd/system/mysql.service
+            regexp: '^ExecStart=/usr/sbin/mysqld \$MYSQLD_OPTS$'
+            line: 'ExecStart=/usr/sbin/mysqld ${MYSQLD_OPTS:---user=mysql}'
+          when: mysql_status.rc != 0
+
+        - name: Reload systemd daemon
+          systemd:
+            daemon_reload: yes
+          when: mysql_status.rc != 0
+
+        - name: Restart MySQL service
+          systemd:
+            name: mysql
+            state: restarted
+          ignore_errors: yes
+          when: mysql_status.rc != 0
+      ignore_errors: yes
+
+    - name: Fix OpenSearch service if needed
+      block:
+        - name: Check OpenSearch service status
+          command: systemctl status opensearch
+          register: opensearch_status
+          failed_when: false
+          changed_when: false
+
+        - name: Restart OpenSearch service
+          systemd:
+            name: opensearch
+            state: restarted
+          ignore_errors: yes
+          when: opensearch_status.rc != 0
+      ignore_errors: yes
+
+    - name: Display completion message
+      debug:
+        msg: "===== 组件修复完成 =====" 

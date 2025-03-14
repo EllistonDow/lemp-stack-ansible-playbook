@@ -12,6 +12,22 @@
         cache_valid_time: 3600
       when: ansible_os_family == "Debian"
 
+    # 确保系统干净，没有锁定的包管理器
+    - name: Check for dpkg locks
+      shell: lsof /var/lib/dpkg/lock* 2>/dev/null || echo "No locks"
+      register: dpkg_locks
+      changed_when: false
+
+    - name: Wait for dpkg locks to be released
+      pause:
+        seconds: 10
+      when: dpkg_locks.stdout != "No locks"
+
+    - name: Fix any broken packages
+      shell: dpkg --configure -a
+      changed_when: false
+      ignore_errors: yes
+
     - name: Copy detection script
       copy:
         src: detect_components.sh
@@ -30,6 +46,77 @@
     - name: Display detected components
       debug:
         var: components_status
+
+    # 检查系统内存
+    - name: Check system memory
+      shell: free -m | grep Mem | awk '{print $2}'
+      register: system_memory
+      changed_when: false
+
+    - name: Display system memory
+      debug:
+        msg: "System memory: {{ system_memory.stdout }}MB"
+
+    - name: Warn if system memory is low
+      debug:
+        msg: "WARNING: System memory ({{ system_memory.stdout }}MB) is less than recommended 4GB for OpenSearch. Performance may be affected."
+      when: system_memory.stdout|int < 4000
+
+    # 清理任何现有的 MySQL 配置问题
+    - name: Clean MySQL environment
+      block:
+        - name: Check if MySQL service exists
+          stat:
+            path: /usr/lib/systemd/system/mysql.service
+          register: mysql_service_exists
+
+        - name: Stop MySQL service if running
+          systemd:
+            name: mysql
+            state: stopped
+          ignore_errors: yes
+          when: mysql_service_exists.stat.exists
+
+        - name: Create MySQL default environment file
+          copy:
+            dest: /etc/default/mysql
+            content: |
+              # Default options for MySQL
+              MYSQLD_OPTS="--user=mysql"
+            mode: '0644'
+            owner: root
+            group: root
+          when: mysql_service_exists.stat.exists
+      when: components_status.percona == 'not_installed'
+
+    # 清理任何现有的 OpenSearch 配置问题
+    - name: Clean OpenSearch environment
+      block:
+        - name: Check if OpenSearch service exists
+          stat:
+            path: /usr/lib/systemd/system/opensearch.service
+          register: opensearch_service_exists
+
+        - name: Stop OpenSearch service if running
+          systemd:
+            name: opensearch
+            state: stopped
+          ignore_errors: yes
+          when: opensearch_service_exists.stat.exists
+
+        - name: Remove existing demo configuration log
+          file:
+            path: /var/log/opensearch/install_demo_configuration.log
+            state: absent
+          ignore_errors: yes
+      when: components_status.opensearch == 'not_installed'
+
+    # 设置 OpenSearch 变量
+    - name: Set OpenSearch variables
+      set_fact:
+        opensearch_heap_size: "{{ (system_memory.stdout|int / 4)|int|default(1, true) }}g"
+        opensearch_security_enabled: false
+      when: components_status.opensearch == 'not_installed'
 
   roles:
     - role: common
@@ -71,6 +158,85 @@
       when: components_status.webmin == 'not_installed'
 
   post_tasks:
+    # 修复可能的服务问题
+    - name: Fix MySQL service if needed
+      block:
+        - name: Check MySQL service status
+          command: systemctl status mysql
+          register: mysql_status
+          failed_when: false
+          changed_when: false
+
+        - name: Fix MySQL service unit file if needed
+          copy:
+            dest: /usr/lib/systemd/system/mysql.service
+            content: |
+              #
+              # Percona Server systemd service file
+              #
+              
+              [Unit]
+              Description=Percona Server
+              After=network.target
+              After=local-fs.target remote-fs.target
+              Requires=local-fs.target remote-fs.target
+              
+              [Install]
+              WantedBy=multi-user.target
+              
+              [Service]
+              User=mysql
+              Group=mysql
+              Type=notify
+              PermissionsStartOnly=true
+              ExecStartPre=/usr/share/mysql/mysql-systemd-start pre
+              EnvironmentFile=-/etc/default/mysql
+              ExecStart=/usr/sbin/mysqld --user=mysql
+              TimeoutSec=600
+              LimitNOFILE = 10000
+              Restart=on-failure
+              RestartPreventExitStatus=1
+              # Always restart when mysqld exits with exit code of 16. This special exit code
+              # is used by mysqld for RESTART SQL.
+              RestartForceExitStatus=16
+              # Set enviroment variable MYSQLD_PARENT_PID. This is required for restart.
+              Environment=MYSQLD_PARENT_PID=1
+              RuntimeDirectory=mysqld
+              RuntimeDirectoryMode=755
+            mode: '0644'
+            owner: root
+            group: root
+          when: mysql_status.rc != 0
+
+        - name: Reload systemd daemon
+          systemd:
+            daemon_reload: yes
+          when: mysql_status.rc != 0
+
+        - name: Restart MySQL service
+          systemd:
+            name: mysql
+            state: restarted
+          ignore_errors: yes
+          when: mysql_status.rc != 0
+      ignore_errors: yes
+
+    - name: Fix OpenSearch service if needed
+      block:
+        - name: Check OpenSearch service status
+          command: systemctl status opensearch
+          register: opensearch_status
+          failed_when: false
+          changed_when: false
+
+        - name: Restart OpenSearch service
+          systemd:
+            name: opensearch
+            state: restarted
+          ignore_errors: yes
+          when: opensearch_status.rc != 0
+      ignore_errors: yes
+
     - name: Run detection script after installation
       shell: /tmp/detect_components.sh
       register: final_detection_result
@@ -94,4 +260,18 @@
           Installation Summary:
           {% for component, status in components_status.items() %}
           - {{ component }}: {% if status == 'installed' %}Already installed (skipped){% else %}Newly installed{% endif %}
-          {% endfor %} 
+          {% endfor %}
+
+    - name: Display installation completion message
+      debug:
+        msg: |
+          ===================================================
+          LEMP Stack installation completed!
+          
+          Some services may require additional configuration.
+          Check the logs above for any warnings or errors.
+          
+          If you encountered any issues with OpenSearch or MySQL,
+          you can run the fix-components.yml playbook:
+          sudo ansible-playbook -i inventory.yml fix-components.yml
+          =================================================== 

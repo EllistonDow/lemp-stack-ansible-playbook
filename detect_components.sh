@@ -63,7 +63,7 @@ else
 fi
 
 # Check OpenSearch
-if is_package_installed "opensearch"; then
+if dpkg -l | grep -q opensearch; then
   echo "opensearch=installed"
 else
   echo "opensearch=not_installed"
