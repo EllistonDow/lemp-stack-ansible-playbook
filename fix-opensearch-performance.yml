@@ -1,0 +1,84 @@
+---
+# Ansible playbook to fix OpenSearch performance-analyzer issues
+- name: Fix OpenSearch Performance Analyzer Issues
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Display start message
+      debug:
+        msg: "===== 开始修复 OpenSearch Performance Analyzer 问题 ====="
+
+    - name: 停止 OpenSearch 服务
+      systemd:
+        name: opensearch
+        state: stopped
+      ignore_errors: yes
+
+    # 禁用性能分析器插件
+    - name: 创建 performance-analyzer-rca 配置目录
+      file:
+        path: /usr/share/opensearch/plugins/opensearch-performance-analyzer/pa_config/
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+      ignore_errors: yes
+
+    - name: 禁用 performance-analyzer 插件
+      copy:
+        dest: /usr/share/opensearch/plugins/opensearch-performance-analyzer/pa_config/performance-analyzer.properties
+        content: |
+          # 禁用 performance-analyzer 插件
+          performance-analyzer.enabled: false
+          rca.enabled: false
+        mode: '0640'
+        owner: opensearch
+        group: opensearch
+      ignore_errors: yes
+
+    # 更新 OpenSearch 配置文件，添加插件禁用选项
+    - name: 更新 OpenSearch 配置文件
+      blockinfile:
+        path: /etc/opensearch/opensearch.yml
+        block: |
+          
+          # 性能分析器配置
+          opensearch.performanceanalyzer.enabled: false
+          plugins.performance_analyzer.enabled: false
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - PERFORMANCE ANALYZER SETTINGS"
+      ignore_errors: yes
+
+    # 设置正确的权限
+    - name: 设置 OpenSearch 目录的正确权限
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+        recurse: yes
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+      ignore_errors: yes
+
+    - name: 启动 OpenSearch 服务
+      systemd:
+        name: opensearch
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    - name: 等待 OpenSearch 启动
+      wait_for:
+        port: 9200
+        host: 127.0.0.1
+        delay: 10
+        timeout: 120
+      ignore_errors: yes
+
+    - name: 显示完成信息
+      debug:
+        msg: "===== OpenSearch Performance Analyzer 问题修复完成 =====" 

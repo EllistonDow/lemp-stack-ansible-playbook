@@ -22,7 +22,32 @@
     state: present
     update_cache: yes
 
-- name: Create OpenSearch directories
+# 完全清理现有的 OpenSearch 配置
+- name: Stop OpenSearch service if running
+  systemd:
+    name: opensearch
+    state: stopped
+  ignore_errors: yes
+
+- name: Completely remove existing OpenSearch
+  apt:
+    name: opensearch
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Remove existing OpenSearch data and config directories
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /etc/opensearch
+    - /var/lib/opensearch
+    - /var/log/opensearch
+    - /usr/share/opensearch
+  ignore_errors: yes
+
+- name: Create necessary directories
   file:
     path: "{{ item }}"
     state: directory
@@ -34,32 +59,14 @@
     - /var/lib/opensearch
     - /var/log/opensearch
 
-# 检查系统内存
-- name: Check system memory
-  shell: free -m | grep Mem | awk '{print $2}'
-  register: system_memory
-  changed_when: false
-
-- name: Warn if system memory is low
-  debug:
-    msg: "WARNING: System memory ({{ system_memory.stdout }}MB) is less than recommended 4GB for OpenSearch. Performance may be affected."
-  when: system_memory.stdout|int < 4000
-
-# 完全清理现有的 OpenSearch 配置
-- name: Stop OpenSearch service if running
-  systemd:
-    name: opensearch
-    state: stopped
-  ignore_errors: yes
-
-- name: Remove existing OpenSearch configuration
+# 预先创建demo配置日志文件以避免安装过程中的错误
+- name: Create demo configuration log file
   file:
-    path: "{{ item }}"
-    state: absent
-  with_items:
-    - /etc/opensearch/opensearch.yml
-    - /etc/opensearch/jvm.options
-    - /var/log/opensearch/install_demo_configuration.log
+    path: /var/log/opensearch/install_demo_configuration.log
+    state: touch
+    owner: root
+    group: root
+    mode: '0644'
   ignore_errors: yes
 
 # 安装 OpenSearch
@@ -69,7 +76,7 @@
     state: present
     update_cache: yes
   environment:
-    OPENSEARCH_INITIAL_ADMIN_PASSWORD: "{{ opensearch_admin_password | default('StrongAdminPassword123!') }}"
+    OPENSEARCH_INITIAL_ADMIN_PASSWORD: "StrongAdminPassword123!"
     DISABLE_INSTALL_DEMO_CONFIG: "true"
     DISABLE_SECURITY_PLUGIN: "true"
   ignore_errors: yes
@@ -82,6 +89,7 @@
     owner: root
     group: opensearch
     mode: '0750'
+  ignore_errors: yes
 
 # 配置 OpenSearch
 - name: Configure OpenSearch
@@ -91,7 +99,6 @@
     owner: root
     group: opensearch
     mode: '0640'
-  notify: restart opensearch
   ignore_errors: yes
 
 - name: Configure JVM options
@@ -101,20 +108,28 @@
     owner: root
     group: opensearch
     mode: '0640'
-  notify: restart opensearch
   ignore_errors: yes
 
-# 调整 JVM 堆大小
-- name: Adjust JVM heap size based on system memory
-  lineinfile:
-    path: /etc/opensearch/jvm.options
-    regexp: '^-Xm(s|x)[0-9]+g'
-    line: '-Xm{{ item.type }}{{ item.value }}g'
-  with_items:
-    - { type: 's', value: "{{ (system_memory.stdout|int / 2048)|int|default(1, true) }}" }
-    - { type: 'x', value: "{{ (system_memory.stdout|int / 2048)|int|default(1, true) }}" }
-  when: system_memory.stdout|int < 4000
-  notify: restart opensearch
+# 禁用性能分析器插件
+- name: Create performance-analyzer-rca config directory
+  file:
+    path: /usr/share/opensearch/plugins/opensearch-performance-analyzer/pa_config/
+    state: directory
+    owner: opensearch
+    group: opensearch
+    mode: '0750'
+  ignore_errors: yes
+
+- name: Disable performance-analyzer plugin
+  copy:
+    dest: /usr/share/opensearch/plugins/opensearch-performance-analyzer/pa_config/performance-analyzer.properties
+    content: |
+      # 禁用performance-analyzer
+      performance-analyzer.enabled: false
+      rca.enabled: false
+    mode: '0640'
+    owner: opensearch
+    group: opensearch
   ignore_errors: yes
 
 # 确保数据和日志目录权限正确
@@ -138,9 +153,10 @@
     enabled: yes
   ignore_errors: yes
 
-- name: Allow OpenSearch through UFW
-  ufw:
-    rule: allow
+- name: Wait for OpenSearch to start
+  wait_for:
+    host: 127.0.0.1
     port: 9200
-    proto: tcp
+    delay: 10
+    timeout: 180
   ignore_errors: yes 

@@ -59,6 +59,59 @@
         owner: root
         group: root
 
+    - name: 创建 MySQL 配置文件
+      copy:
+        dest: /etc/mysql/my.cnf
+        content: |
+          [mysqld]
+          user = mysql
+          bind-address = 127.0.0.1
+          mysqlx-bind-address = 127.0.0.1
+          key_buffer_size = 256M
+          max_allowed_packet = 64M
+          thread_stack = 192K
+          thread_cache_size = 8
+          max_connections = 500
+          table_open_cache = 4000
+          
+          # 大内存系统优化设置
+          innodb_buffer_pool_size = 64G
+          innodb_buffer_pool_instances = 16
+          innodb_log_file_size = 1G
+          innodb_log_buffer_size = 64M
+          innodb_flush_log_at_trx_commit = 1
+          innodb_flush_method = O_DIRECT
+          
+          # Character set
+          character-set-server = utf8mb4
+          collation-server = utf8mb4_unicode_ci
+          
+          # InnoDB settings
+          innodb_file_per_table = 1
+          innodb_open_files = 400
+          innodb_io_capacity = 4000
+          innodb_io_capacity_max = 8000
+          
+          # MyISAM settings
+          myisam_recover_options = BACKUP
+          
+          # Logging
+          log_error = /var/log/mysql/error.log
+          
+          # Binary logging
+          server-id = 1
+          log_bin = /var/log/mysql/mysql-bin.log
+          expire_logs_days = 7
+          
+          # Slow query logging
+          slow_query_log = 1
+          slow_query_log_file = /var/log/mysql/mysql-slow.log
+          long_query_time = 2.0
+        mode: '0644'
+        owner: root
+        group: root
+      ignore_errors: yes
+
     - name: 重新加载 systemd 守护进程
       systemd:
         daemon_reload: yes
@@ -76,27 +129,15 @@
         state: stopped
       ignore_errors: yes
 
-    - name: 检查系统内存
-      shell: free -m | grep Mem | awk '{print $2}'
-      register: system_memory
-      changed_when: false
-
-    - name: 显示系统内存
-      debug:
-        msg: "系统内存: {{ system_memory.stdout }}MB"
-
-    - name: 计算适当的堆大小（系统内存的一半，最大 31GB）
+    # 设置固定的 JVM 堆大小为 31GB，考虑到大内存系统的最佳做法
+    # 对于搜索引擎，不要超过31GB的堆大小，即使有128GB内存
+    - name: 设置优化的 OpenSearch 堆大小
       set_fact:
-        heap_size_mb: "{{ (system_memory.stdout|int / 2)|int }}"
-        max_heap_mb: 31744  # 31GB in MB
+        final_heap_mb: 31744  # 31GB
 
-    - name: 设置最终堆大小（上限为 31GB）
-      set_fact:
-        final_heap_mb: "{{ [heap_size_mb|int, max_heap_mb|int] | min }}"
-
-    - name: 显示计算的堆大小
+    - name: 显示配置的堆大小
       debug:
-        msg: "设置 OpenSearch 堆大小为 {{ final_heap_mb }}MB ({{ (final_heap_mb|int / 1024)|int }}GB)"
+        msg: "设置 OpenSearch 堆大小为 {{ final_heap_mb }}MB ({{ (final_heap_mb|int / 1024)|int }}GB) - 针对大内存系统(128GB)优化"
 
     - name: 删除现有的 OpenSearch 配置文件
       file:
@@ -111,7 +152,7 @@
       copy:
         dest: /etc/opensearch/jvm.options
         content: |
-          ## JVM configuration
+          ## JVM configuration for large memory system (128GB)
 
           ################################################################
           ## IMPORTANT: JVM heap size
@@ -120,7 +161,7 @@
           -Xmx{{ final_heap_mb }}m
 
           ################################################################
-          ## Expert settings
+          ## Expert settings optimized for large memory system
           ################################################################
           ## GC configuration
           8-13:-XX:+UseConcMarkSweepGC
@@ -131,24 +172,25 @@
           14-:-XX:+UseG1GC
           14-:-XX:G1ReservePercent=25
           14-:-XX:InitiatingHeapOccupancyPercent=30
+          
+          ## Large page settings for better performance
+          -XX:+UseLargePages
+          -XX:LargePageSizeInBytes=2m
 
           ## JVM temporary directory
           -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
 
           ## heap dumps
-
-          # generate a heap dump when an allocation from the Java heap fails
-          # heap dumps are created in the working directory of the JVM
           -XX:+HeapDumpOnOutOfMemoryError
-
-          # specify an alternative path for heap dumps; ensure the directory exists and
-          # has sufficient space
           -XX:HeapDumpPath=/var/lib/opensearch
 
-          # specify an alternative path for JVM fatal error logs
+          ## JVM fatal error logs
           -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
 
-          # Explicitly allow security manager (for Java 17 compatibility)
+          ## Network settings
+          -Djava.net.preferIPv4Stack=true
+
+          ## Explicitly allow security manager (for Java 17 compatibility)
           17-:-Djava.security.manager=allow
         mode: '0640'
         owner: root
@@ -158,7 +200,7 @@
       copy:
         dest: /etc/opensearch/opensearch.yml
         content: |
-          # OpenSearch 配置文件
+          # OpenSearch 配置文件 - 针对128GB大内存系统优化
           cluster.name: opensearch-cluster
           node.name: node-1
           path.data: /var/lib/opensearch
@@ -167,11 +209,36 @@
           http.port: 9200
           discovery.type: single-node
           
+          # 内存设置
+          bootstrap.memory_lock: true
+          
           # 安全设置
           plugins.security.disabled: true
+          
+          # 索引和分片设置
+          action.auto_create_index: true
+          index.number_of_shards: 5
+          index.number_of_replicas: 0
+          indices.query.bool.max_clause_count: 10240
         mode: '0640'
         owner: root
         group: opensearch
+
+    - name: 配置系统限制
+      copy:
+        dest: /etc/security/limits.d/opensearch.conf
+        content: |
+          # OpenSearch system limits configuration
+          opensearch soft nofile 65536
+          opensearch hard nofile 65536
+          opensearch soft nproc 4096
+          opensearch hard nproc 4096
+          opensearch soft memlock unlimited
+          opensearch hard memlock unlimited
+        mode: '0644'
+        owner: root
+        group: root
+      ignore_errors: yes
 
     - name: 设置 OpenSearch 目录的正确权限
       file:

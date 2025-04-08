@@ -1,0 +1,287 @@
+---
+# 综合修复OpenSearch的playbook
+- name: Fix OpenSearch Complete
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Display start message
+      debug:
+        msg: "===== 开始全面修复 OpenSearch ====="
+
+    # 1. 停止服务
+    - name: 停止 OpenSearch 服务
+      systemd:
+        name: opensearch
+        state: stopped
+      ignore_errors: yes
+
+    # 2. 检查系统状态
+    - name: 检查系统内存
+      shell: free -m | grep Mem | awk '{print $2}'
+      register: system_memory
+      changed_when: false
+
+    - name: 显示系统内存信息
+      debug:
+        msg: "系统内存: {{ system_memory.stdout }}MB"
+
+    # 3. 移除现有配置文件
+    - name: 删除现有的 OpenSearch 配置文件
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /etc/opensearch/opensearch.yml
+        - /etc/opensearch/jvm.options
+      ignore_errors: yes
+
+    # 4. 设置合理的JVM堆大小 (2GB)
+    - name: 设置合理的堆大小
+      set_fact:
+        heap_size_mb: 2048  # 2GB
+        max_heap_mb: 2048  # 2GB
+
+    - name: 显示已计算的堆大小
+      debug:
+        msg: "设置 OpenSearch 堆大小为 {{ heap_size_mb }}MB ({{ (heap_size_mb|int / 1024)|int }}GB)"
+
+    # 5. 修复JVM配置
+    - name: 创建优化的JVM配置
+      copy:
+        dest: /etc/opensearch/jvm.options
+        content: |
+          ## 优化的JVM配置
+
+          ################################################################
+          ## JVM堆大小设置 - 小而稳定
+          ################################################################
+          -Xms{{ heap_size_mb }}m
+          -Xmx{{ heap_size_mb }}m
+
+          ################################################################
+          ## GC配置
+          ################################################################
+          ## 使用G1GC垃圾收集器
+          -XX:+UseG1GC
+          -XX:G1ReservePercent=25
+          -XX:InitiatingHeapOccupancyPercent=30
+
+          ## JVM临时目录
+          -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
+
+          ## 堆转储设置
+          -XX:+HeapDumpOnOutOfMemoryError
+          -XX:HeapDumpPath=/var/lib/opensearch
+
+          ## JVM错误日志
+          -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
+
+          ## 网络设置
+          -Djava.net.preferIPv4Stack=true
+
+          ## 为Java 17显式允许安全管理器
+          17-:-Djava.security.manager=allow
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    # 6. 创建优化的OpenSearch配置
+    - name: 创建优化的OpenSearch配置
+      copy:
+        dest: /etc/opensearch/opensearch.yml
+        content: |
+          # 优化的OpenSearch配置
+          cluster.name: opensearch-cluster
+          node.name: node-1
+          
+          # 路径设置
+          path.data: /var/lib/opensearch
+          path.logs: /var/log/opensearch
+          
+          # 网络设置 - 允许从任何IP访问
+          network.host: 0.0.0.0
+          http.port: 9200
+          transport.host: 0.0.0.0
+          transport.port: 9300
+          
+          # 单节点发现
+          discovery.type: single-node
+          
+          # 内存设置 - 禁用内存锁定
+          bootstrap.memory_lock: false
+          
+          # 禁用安全插件
+          plugins.security.disabled: true
+          
+          # 性能优化设置
+          thread_pool.write.queue_size: 1000
+          thread_pool.search.queue_size: 1000
+          
+          # 索引设置
+          action.auto_create_index: true
+          index.number_of_shards: 2
+          index.number_of_replicas: 0
+          indices.query.bool.max_clause_count: 2048
+          
+          # 禁用性能分析器
+          opensearch.performanceanalyzer.enabled: false
+          plugins.performance_analyzer.enabled: false
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    # 7. 禁用性能分析器
+    - name: 创建 performance-analyzer-rca 配置目录
+      file:
+        path: /usr/share/opensearch/plugins/opensearch-performance-analyzer/pa_config/
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+      ignore_errors: yes
+
+    - name: 禁用 performance-analyzer 插件
+      copy:
+        dest: /usr/share/opensearch/plugins/opensearch-performance-analyzer/pa_config/performance-analyzer.properties
+        content: |
+          # 禁用performance-analyzer
+          performance-analyzer.enabled: false
+          rca.enabled: false
+        mode: '0640'
+        owner: opensearch
+        group: opensearch
+      ignore_errors: yes
+
+    # 8. 优化系统配置
+    - name: 配置系统限制
+      copy:
+        dest: /etc/security/limits.d/opensearch.conf
+        content: |
+          # OpenSearch系统限制配置
+          opensearch soft nofile 65536
+          opensearch hard nofile 65536
+          opensearch soft nproc 4096
+          opensearch hard nproc 4096
+        mode: '0644'
+        owner: root
+        group: root
+      ignore_errors: yes
+
+    # 9. 设置目录权限
+    - name: 设置OpenSearch目录的正确权限
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+        recurse: yes
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+      ignore_errors: yes
+
+    # 10. 修复systemd服务配置
+    - name: 修改OpenSearch服务配置
+      copy:
+        dest: /usr/lib/systemd/system/opensearch.service
+        content: |
+          [Unit]
+          Description=OpenSearch
+          Documentation=https://opensearch.org/
+          Requires=network.target
+          After=network.target
+
+          [Service]
+          Type=simple
+          RuntimeDirectory=opensearch
+          PrivateTmp=true
+          Environment=OPENSEARCH_HOME=/usr/share/opensearch
+          Environment=OPENSEARCH_PATH_CONF=/etc/opensearch
+          Environment=PID_DIR=/var/run/opensearch
+          Environment=OPENSEARCH_SD_NOTIFY=true
+          Environment=JAVA_HOME=/usr/share/opensearch/jdk
+
+          User=opensearch
+          Group=opensearch
+
+          ExecStart=/usr/share/opensearch/bin/systemd-entrypoint -p ${PID_DIR}/opensearch.pid --quiet
+
+          # 设置较长的超时时间
+          TimeoutStartSec=180s
+
+          # StandardOutput=journal
+          # StandardError=inherit
+
+          # Specifies the maximum file descriptor number that can be opened by this process
+          LimitNOFILE=65536
+
+          # Specifies the maximum number of processes
+          LimitNPROC=4096
+
+          # Disable memlock to avoid memory locking issues
+          #LimitMEMLOCK=infinity
+
+          # Disable timeout logic and wait until process is stopped
+          TimeoutStopSec=0
+
+          # SIGTERM signal is used to stop the Java process
+          KillSignal=SIGTERM
+
+          # Send the signal only to the JVM rather than its control group
+          KillMode=process
+
+          # Java process is never killed
+          SendSIGKILL=no
+
+          # When a JVM receives a SIGTERM signal it exits with code 143
+          SuccessExitStatus=143
+
+          # Allow a slow startup before the systemd notifier module kicks in to extend the timeout
+          TimeoutStartSec=180
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+        owner: root
+        group: root
+
+    # 11. 重载服务配置
+    - name: 重载systemd守护进程
+      systemd:
+        daemon_reload: yes
+
+    # 12. 启动服务
+    - name: 启动OpenSearch服务
+      systemd:
+        name: opensearch
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    # 13. 等待服务启动
+    - name: 等待服务启动
+      wait_for:
+        host: 127.0.0.1
+        port: 9200
+        delay: 10
+        timeout: 180
+      ignore_errors: yes
+
+    # 14. 验证服务状态
+    - name: 检查服务状态
+      shell: systemctl status opensearch | grep -o "active"
+      register: service_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: 显示服务状态
+      debug:
+        msg: "OpenSearch服务状态: {{ 'Active' if service_status.stdout == 'active' else 'Failed' }}"
+      ignore_errors: yes
+
+    - name: 显示完成信息
+      debug:
+        msg: "===== OpenSearch修复完成 =====" 

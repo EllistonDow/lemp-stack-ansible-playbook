@@ -24,24 +24,25 @@
       debug:
         msg: "System memory: {{ system_memory.stdout }}MB"
 
-    - name: Calculate appropriate heap size (half of system memory, max 31GB)
+    # 由于memory lock问题，将JVM堆大小设置得较小
+    - name: Set lower heap size due to memory lock issues
       set_fact:
-        heap_size_mb: "{{ (system_memory.stdout|int / 2)|int }}"
-        max_heap_mb: 31744  # 31GB in MB
+        heap_size_mb: 4096  # 4GB in MB
+        max_heap_mb: 4096  # 4GB in MB
 
-    - name: Set final heap size (capped at 31GB)
+    - name: Set final heap size
       set_fact:
-        final_heap_mb: "{{ [heap_size_mb|int, max_heap_mb|int] | min }}"
+        final_heap_mb: "{{ heap_size_mb|int }}"
 
     - name: Display calculated heap size
       debug:
-        msg: "Setting OpenSearch heap size to {{ final_heap_mb }}MB ({{ (final_heap_mb|int / 1024)|int }}GB)"
+        msg: "Setting OpenSearch heap size to {{ final_heap_mb }}MB ({{ (final_heap_mb|int / 1024)|int }}GB) - reduced due to memory lock issues"
 
     - name: Fix OpenSearch JVM configuration
       copy:
         dest: /etc/opensearch/jvm.options
         content: |
-          ## JVM configuration
+          ## JVM configuration with reduced heap size due to memory locking issues
 
           ################################################################
           ## IMPORTANT: JVM heap size
@@ -61,28 +62,70 @@
           14-:-XX:+UseG1GC
           14-:-XX:G1ReservePercent=25
           14-:-XX:InitiatingHeapOccupancyPercent=30
-
+          
           ## JVM temporary directory
           -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
 
           ## heap dumps
-
-          # generate a heap dump when an allocation from the Java heap fails
-          # heap dumps are created in the working directory of the JVM
           -XX:+HeapDumpOnOutOfMemoryError
-
-          # specify an alternative path for heap dumps; ensure the directory exists and
-          # has sufficient space
           -XX:HeapDumpPath=/var/lib/opensearch
 
-          # specify an alternative path for JVM fatal error logs
+          ## JVM fatal error logs
           -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
 
-          # Explicitly allow security manager (for Java 17 compatibility)
+          ## Network settings
+          -Djava.net.preferIPv4Stack=true
+
+          ## Explicitly allow security manager (for Java 17 compatibility)
           17-:-Djava.security.manager=allow
         mode: '0640'
         owner: root
         group: opensearch
+
+    - name: Create OpenSearch configuration file
+      copy:
+        dest: /etc/opensearch/opensearch.yml
+        content: |
+          # OpenSearch 配置文件
+          cluster.name: opensearch-cluster
+          node.name: node-1
+          path.data: /var/lib/opensearch
+          path.logs: /var/log/opensearch
+          network.host: 0.0.0.0
+          http.port: 9200
+          discovery.type: single-node
+          
+          # 禁用内存锁定，避免启动失败
+          bootstrap.memory_lock: false
+          
+          # 安全设置
+          plugins.security.disabled: true
+          
+          # 索引和分片设置
+          action.auto_create_index: true
+          index.number_of_shards: 5
+          index.number_of_replicas: 0
+          indices.query.bool.max_clause_count: 10240
+        mode: '0640'
+        owner: root
+        group: opensearch
+      ignore_errors: yes
+
+    - name: Configure system for OpenSearch
+      copy:
+        dest: /etc/security/limits.d/opensearch.conf
+        content: |
+          # OpenSearch system limits configuration
+          opensearch soft nofile 65536
+          opensearch hard nofile 65536
+          opensearch soft nproc 4096
+          opensearch hard nproc 4096
+          opensearch soft memlock unlimited
+          opensearch hard memlock unlimited
+        mode: '0644'
+        owner: root
+        group: root
+      ignore_errors: yes
 
     - name: Set correct permissions for OpenSearch directories
       file:

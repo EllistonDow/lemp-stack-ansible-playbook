@@ -3,8 +3,7 @@ worker_processes auto;
 pid /var/run/nginx.pid;
 
 # Load ModSecurity dynamic module
-# Commented out until we successfully compile and install the module
-# load_module /usr/lib/nginx/modules/ngx_http_modsecurity_module.so;
+load_module /usr/lib/nginx/modules/ngx_http_modsecurity_module.so;
 
 events {
     worker_connections 1024;
@@ -49,9 +48,8 @@ http {
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
 
     # ModSecurity
-    # Commented out until we successfully compile and install the module
-    # modsecurity on;
-    # modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
+    modsecurity on;
+    modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
 
     # Virtual Host Configs
     include /etc/nginx/conf.d/*.conf;

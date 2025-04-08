@@ -2,7 +2,7 @@
 
 这个Ansible项目用于在Ubuntu 24.04系统上自动化安装和配置扩展版LEMP栈，包含以下组件：
 
-- **Nginx**: 1.24.* (带 ModSecurity)
+- **Nginx**: 1.27.* (带 ModSecurity)
 - **PHP**: 8.3.*
 - **Percona Server**: 8.0.* (MySQL替代品)
 - **Composer**: 2.7.*

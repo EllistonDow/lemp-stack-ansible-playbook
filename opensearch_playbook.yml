@@ -1,17 +1,201 @@
 ---
-# OpenSearch Playbook for Ubuntu 24.04
+# Playbook to install OpenSearch 2.12.0 with minimal configuration
 - name: Install OpenSearch
   hosts: all
-  become: true
-  gather_facts: true
+  become: yes
+  gather_facts: yes
 
-  pre_tasks:
-    - name: Update apt cache
+  tasks:
+    - name: Install required packages
       apt:
+        name:
+          - apt-transport-https
+          - gnupg
+          - ca-certificates
+          - openjdk-17-jdk
+        state: present
         update_cache: yes
-        cache_valid_time: 3600
-      when: ansible_os_family == "Debian"
 
-  roles:
-    - common
-    - opensearch 
+    - name: Add OpenSearch apt key
+      apt_key:
+        url: https://artifacts.opensearch.org/publickeys/opensearch.pgp
+        state: present
+
+    - name: Add OpenSearch repository
+      apt_repository:
+        repo: "deb https://artifacts.opensearch.org/releases/bundle/opensearch/2.x/apt stable main"
+        state: present
+        update_cache: yes
+
+    # 完全清理现有的 OpenSearch
+    - name: Stop OpenSearch service if running
+      systemd:
+        name: opensearch
+        state: stopped
+      ignore_errors: yes
+
+    - name: Completely remove existing OpenSearch
+      apt:
+        name: opensearch
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Remove existing OpenSearch data and config directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /etc/opensearch
+        - /var/lib/opensearch
+        - /var/log/opensearch
+        - /usr/share/opensearch
+      ignore_errors: yes
+
+    - name: Create necessary directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      with_items:
+        - /var/run/opensearch
+        - /var/lib/opensearch
+        - /var/log/opensearch
+
+    # 预先创建demo配置日志文件以避免安装过程中的错误
+    - name: Create demo configuration log file
+      file:
+        path: /var/log/opensearch/install_demo_configuration.log
+        state: touch
+        owner: root
+        group: root
+        mode: '0644'
+      ignore_errors: yes
+
+    # 安装 OpenSearch
+    - name: Install OpenSearch
+      apt:
+        name: opensearch=2.12.0
+        state: present
+        update_cache: yes
+      environment:
+        OPENSEARCH_INITIAL_ADMIN_PASSWORD: "Str0ngP@ssw0rd!2025X#"
+        DISABLE_INSTALL_DEMO_CONFIG: "true"
+        DISABLE_SECURITY_PLUGIN: "true"
+      ignore_errors: yes
+
+    # 使用dpkg强制完成安装，忽略可能的错误
+    - name: Force configure OpenSearch package
+      shell: sudo dpkg --configure -a
+      ignore_errors: yes
+
+    # 基本配置
+    - name: Configure OpenSearch - simple configuration
+      copy:
+        dest: /etc/opensearch/opensearch.yml
+        content: |
+          # OpenSearch configuration file - minimal setup
+          cluster.name: opensearch-cluster
+          node.name: node-1
+          path.data: /var/lib/opensearch
+          path.logs: /var/log/opensearch
+          network.host: 0.0.0.0
+          http.port: 9200
+          discovery.type: single-node
+          plugins.security.disabled: true
+          bootstrap.memory_lock: false
+        mode: '0640'
+        owner: root
+        group: opensearch
+      ignore_errors: yes
+
+    - name: Configure JVM options - minimal setup
+      copy:
+        dest: /etc/opensearch/jvm.options
+        content: |
+          ## JVM configuration
+          -Xms1g
+          -Xmx1g
+          -XX:+UseG1GC
+          -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
+          -XX:+HeapDumpOnOutOfMemoryError
+          -XX:HeapDumpPath=/var/lib/opensearch
+          -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
+          -Djava.net.preferIPv4Stack=true
+          17-:-Djava.security.manager=allow
+        mode: '0640'
+        owner: root
+        group: opensearch
+      ignore_errors: yes
+
+    # 禁用性能分析器插件
+    - name: Create performance-analyzer config directory
+      file:
+        path: /usr/share/opensearch/plugins/opensearch-performance-analyzer/pa_config/
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+      ignore_errors: yes
+
+    - name: Disable performance-analyzer plugin
+      copy:
+        dest: /usr/share/opensearch/plugins/opensearch-performance-analyzer/pa_config/performance-analyzer.properties
+        content: |
+          # 禁用performance-analyzer
+          performance-analyzer.enabled: false
+          rca.enabled: false
+        mode: '0640'
+        owner: opensearch
+        group: opensearch
+      ignore_errors: yes
+
+    # 设置权限
+    - name: Set correct permissions for OpenSearch directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
+        recurse: yes
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+      ignore_errors: yes
+
+    # 创建opensearch-keystore
+    - name: Create OpenSearch keystore
+      shell: sudo -u opensearch /usr/share/opensearch/bin/opensearch-keystore create
+      args:
+        creates: /etc/opensearch/opensearch.keystore
+      ignore_errors: yes
+
+    # 启动服务
+    - name: Start and enable OpenSearch service
+      systemd:
+        name: opensearch
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    # 检查服务状态
+    - name: Wait for OpenSearch to start
+      wait_for:
+        host: 127.0.0.1
+        port: 9200
+        delay: 10
+        timeout: 180
+      ignore_errors: yes
+
+    - name: Check if OpenSearch is running
+      shell: systemctl status opensearch | grep -o "active" || echo "not running"
+      register: os_status
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display status
+      debug:
+        msg: "OpenSearch服务状态: {{ 'Active' if os_status.stdout == 'active' else 'Failed' }}" 

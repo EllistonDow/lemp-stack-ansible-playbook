@@ -10,6 +10,7 @@
       - lsb-release
       - build-essential
       - libpcre3-dev
+      - libpcre2-dev
       - zlib1g-dev
       - libssl-dev
       - libtool
@@ -22,6 +23,8 @@
       - libgeoip-dev
       - libxslt1-dev
       - libgd-dev
+      - liblmdb-dev
+      - libyajl-dev
     state: present
     update_cache: yes
 
@@ -37,13 +40,7 @@
     state: present
     update_cache: yes
   ignore_errors: yes
-
-- name: Add Nginx 1.26 repository
-  apt_repository:
-    repo: "deb http://nginx.org/packages/ubuntu {{ ansible_distribution_release }} nginx"
-    state: present
-    update_cache: yes
-  ignore_errors: yes
+  when: ansible_distribution_release != "noble"
 
 - name: Add Nginx repository (alternative)
   apt_repository:
@@ -85,7 +82,7 @@
     git submodule init
     git submodule update
     ./build.sh
-    ./configure
+    ./configure --with-pcre2=/usr
     make
     make install
   args:
@@ -95,17 +92,17 @@
 # Install Nginx with dynamic modules support
 - name: Install Nginx
   apt:
-    name: nginx=1.26.0*
+    name: nginx=1.27.*
     state: present
     update_cache: yes
     force: yes
   ignore_errors: yes
   register: nginx_installed
-  when: not skip_modsec_install
+  when: not skip_modsec_install and ansible_distribution_release != "noble"
 
 - name: Install Nginx (alternative)
   apt:
-    name: nginx=1.26.0*
+    name: nginx=1.27.*
     state: present
     update_cache: yes
   when: ansible_distribution_release == "noble"
@@ -326,25 +323,6 @@
     name: nginx
     state: started
     enabled: yes
-
-- name: Enable ModSecurity in Nginx configuration
-  lineinfile:
-    path: /etc/nginx/nginx.conf
-    regexp: '^#?\s*load_module\s+.*ngx_http_modsecurity_module.so'
-    line: 'load_module /usr/lib/nginx/modules/ngx_http_modsecurity_module.so;'
-    insertbefore: '^events'
-  ignore_errors: yes
-
-- name: Enable ModSecurity in Nginx http block
-  blockinfile:
-    path: /etc/nginx/nginx.conf
-    marker: "# {mark} MODSECURITY CONFIGURATION"
-    insertafter: '^http {'
-    block: |
-      # ModSecurity
-      modsecurity on;
-      modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
-  ignore_errors: yes
 
 # Add Varnish proxy configuration
 - name: Create Varnish proxy configuration
