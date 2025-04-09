@@ -6,6 +6,21 @@
   gather_facts: yes
 
   tasks:
+    # 获取系统内存信息，用于合理设置JVM堆大小
+    - name: Get system memory
+      shell: grep MemTotal /proc/meminfo | awk '{print $2}'
+      register: system_memory
+      changed_when: false
+
+    - name: Calculate OpenSearch heap size
+      set_fact:
+        # 使用系统内存的1/4但不超过8GB
+        heap_size_mb: "{{ [((system_memory.stdout|int / 1024) / 4)|int, 8192]|min }}"
+
+    - name: Display calculated heap size
+      debug:
+        msg: "Setting OpenSearch heap size to {{ heap_size_mb }}MB ({{ (heap_size_mb|int / 1024)|int }}GB)"
+
     - name: Install required packages
       apt:
         name:
@@ -50,6 +65,7 @@
         - /var/lib/opensearch
         - /var/log/opensearch
         - /usr/share/opensearch
+        - /var/run/opensearch
       ignore_errors: yes
 
     - name: Create necessary directories
@@ -74,6 +90,31 @@
         mode: '0644'
       ignore_errors: yes
 
+    # 先准备好配置文件，避免安装过程中使用默认配置
+    - name: Create OpenSearch directory
+      file:
+        path: /etc/opensearch
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    # 配置系统限制
+    - name: Configure system limits for OpenSearch
+      copy:
+        dest: /etc/security/limits.d/opensearch.conf
+        content: |
+          # OpenSearch系统限制配置
+          opensearch soft nofile 65536
+          opensearch hard nofile 65536
+          opensearch soft nproc 4096
+          opensearch hard nproc 4096
+          opensearch soft memlock unlimited
+          opensearch hard memlock unlimited
+        mode: '0644'
+        owner: root
+        group: root
+
     # 安装 OpenSearch
     - name: Install OpenSearch
       apt:
@@ -91,40 +132,86 @@
       shell: sudo dpkg --configure -a
       ignore_errors: yes
 
-    # 基本配置
-    - name: Configure OpenSearch - simple configuration
+    # 基本配置 - 注意：避免使用索引级别设置
+    - name: Configure OpenSearch - proper configuration
       copy:
         dest: /etc/opensearch/opensearch.yml
         content: |
-          # OpenSearch configuration file - minimal setup
+          # OpenSearch配置文件 - 经过优化的安全配置
           cluster.name: opensearch-cluster
           node.name: node-1
+          
+          # 路径设置
           path.data: /var/lib/opensearch
           path.logs: /var/log/opensearch
+          
+          # 网络设置 - 允许从任何IP访问
           network.host: 0.0.0.0
           http.port: 9200
+          transport.host: 0.0.0.0
+          transport.port: 9300
+          
+          # 单节点发现
           discovery.type: single-node
-          plugins.security.disabled: true
+          
+          # 内存设置 - 禁用内存锁定
           bootstrap.memory_lock: false
+          
+          # 禁用安全插件
+          plugins.security.disabled: true
+          
+          # 性能优化设置
+          thread_pool.write.queue_size: 1000
+          thread_pool.search.queue_size: 1000
+          
+          # 索引操作设置 - 注意：只使用集群级别设置
+          action.auto_create_index: true
+          
+          # 禁用性能分析器
+          opensearch.performanceanalyzer.enabled: false
+          plugins.performance_analyzer.enabled: false
         mode: '0640'
         owner: root
         group: opensearch
       ignore_errors: yes
 
-    - name: Configure JVM options - minimal setup
+    - name: Configure JVM options - optimized
       copy:
         dest: /etc/opensearch/jvm.options
         content: |
-          ## JVM configuration
-          -Xms1g
-          -Xmx1g
+          ## JVM配置文件 - 经过优化的设置
+          
+          # 堆大小设置 - 自动根据系统内存计算
+          -Xms{{ heap_size_mb }}m
+          -Xmx{{ heap_size_mb }}m
+          
+          # GC设置
           -XX:+UseG1GC
+          -XX:G1ReservePercent=25
+          -XX:InitiatingHeapOccupancyPercent=30
+          
+          # 临时目录
           -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
+          
+          # 堆转储设置
           -XX:+HeapDumpOnOutOfMemoryError
           -XX:HeapDumpPath=/var/lib/opensearch
+          
+          # 错误文件位置
           -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
+          
+          # 网络设置
           -Djava.net.preferIPv4Stack=true
+          
+          # Java 17兼容性
           17-:-Djava.security.manager=allow
+          
+          # 直接内存限制
+          -XX:MaxDirectMemorySize={{ (heap_size_mb|int / 2)|int }}m
+          
+          # 性能分析器设置
+          -Dclk.tck=100
+          -Djdk.attach.allowAttachSelf=true
         mode: '0640'
         owner: root
         group: opensearch
@@ -164,8 +251,65 @@
       with_items:
         - /var/lib/opensearch
         - /var/log/opensearch
+        - /var/run/opensearch
       ignore_errors: yes
 
+    # 确保服务单元文件正确
+    - name: Update OpenSearch service unit
+      copy:
+        dest: /usr/lib/systemd/system/opensearch.service
+        content: |
+          [Unit]
+          Description=OpenSearch
+          Documentation=https://opensearch.org/
+          Wants=network-online.target
+          After=network-online.target
+          
+          [Service]
+          Type=simple
+          RuntimeDirectory=opensearch
+          PrivateTmp=true
+          Environment=OPENSEARCH_HOME=/usr/share/opensearch
+          Environment=OPENSEARCH_PATH_CONF=/etc/opensearch
+          Environment=PID_DIR=/var/run/opensearch
+          Environment=OPENSEARCH_SD_NOTIFY=true
+          EnvironmentFile=-/etc/default/opensearch
+          
+          WorkingDirectory=/usr/share/opensearch
+          
+          User=opensearch
+          Group=opensearch
+          
+          ExecStart=/usr/share/opensearch/bin/systemd-entrypoint -p ${PID_DIR}/opensearch.pid --quiet
+          
+          # 标准输出和标准错误重定向到日志
+          StandardOutput=journal
+          StandardError=inherit
+          
+          # 确保文件资源不会被耗尽
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          # 允许内存锁定
+          LimitMEMLOCK=infinity
+          
+          # 最大超时时间
+          TimeoutStopSec=75
+          
+          # 在服务失败时重启
+          Restart=always
+          RestartSec=15
+          
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+        owner: root
+        group: root
+      ignore_errors: yes
+    
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+        
     # 创建opensearch-keystore
     - name: Create OpenSearch keystore
       shell: sudo -u opensearch /usr/share/opensearch/bin/opensearch-keystore create
@@ -181,13 +325,13 @@
         enabled: yes
       ignore_errors: yes
 
-    # 检查服务状态
+    # 检查服务状态 - 给予更多启动时间
     - name: Wait for OpenSearch to start
       wait_for:
         host: 127.0.0.1
         port: 9200
-        delay: 10
-        timeout: 180
+        delay: 20
+        timeout: 300
       ignore_errors: yes
 
     - name: Check if OpenSearch is running
@@ -198,4 +342,18 @@
 
     - name: Display status
       debug:
-        msg: "OpenSearch服务状态: {{ 'Active' if os_status.stdout == 'active' else 'Failed' }}" 
+        msg: "OpenSearch服务状态: {{ 'Active' if os_status.stdout == 'active' else 'Failed' }}"
+        
+    - name: Test OpenSearch API
+      uri:
+        url: http://localhost:9200
+        method: GET
+        status_code: 200
+      register: api_response
+      ignore_errors: yes
+        
+    - name: Display API status
+      debug:
+        msg: "OpenSearch API响应: {{ 'Success' if api_response.status == 200 else 'Failed' }}"
+        verbosity: 0
+      when: api_response is defined 
