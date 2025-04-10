@@ -1,0 +1,10 @@
+# 极简配置
+cluster.name: opensearch-cluster
+node.name: node-1
+path.data: /var/lib/opensearch
+path.logs: /var/log/opensearch
+network.host: 0.0.0.0
+http.port: 9200
+discovery.type: single-node
+plugins.security.disabled: true
+bootstrap.memory_lock: false 

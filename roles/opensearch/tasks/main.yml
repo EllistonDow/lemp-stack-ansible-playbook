@@ -1,34 +1,147 @@
 ---
 # OpenSearch installation and configuration tasks
 
+# 安装必要的包
 - name: Install required packages
   apt:
     name:
+      - curl
+      - gnupg2
+      - lsb-release
       - apt-transport-https
-      - gnupg
       - ca-certificates
-      - openjdk-17-jdk
     state: present
     update_cache: yes
 
-- name: Add OpenSearch apt key
+# 添加OpenSearch GPG密钥
+- name: Add OpenSearch GPG key
   apt_key:
     url: https://artifacts.opensearch.org/publickeys/opensearch.pgp
     state: present
 
+# 添加OpenSearch仓库
 - name: Add OpenSearch repository
   apt_repository:
     repo: "deb https://artifacts.opensearch.org/releases/bundle/opensearch/2.x/apt stable main"
     state: present
-    update_cache: yes
+    filename: opensearch
 
-# 完全清理现有的 OpenSearch 配置
+# 检查Java版本
+- name: Check Java version
+  command: java -version
+  register: java_version
+  ignore_errors: yes
+
+# 安装Java 11
+- name: Install Java 11
+  apt:
+    name: openjdk-11-jdk
+    state: present
+  when: java_version.rc != 0
+
+# 停止现有的OpenSearch服务
 - name: Stop OpenSearch service if running
   systemd:
     name: opensearch
     state: stopped
   ignore_errors: yes
 
+# 清理现有配置
+- name: Remove existing OpenSearch configuration
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /etc/opensearch
+    - /var/lib/opensearch
+    - /var/log/opensearch
+
+# 配置系统限制
+- name: Configure system limits
+  copy:
+    dest: /etc/security/limits.d/opensearch.conf
+    content: |
+      opensearch soft nofile 65535
+      opensearch hard nofile 65535
+      opensearch soft nproc 4096
+      opensearch hard nproc 4096
+      opensearch soft memlock unlimited
+      opensearch hard memlock unlimited
+    mode: '0644'
+
+# 创建必要的目录
+- name: Create OpenSearch directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: opensearch
+    group: opensearch
+    mode: '0755'
+  with_items:
+    - "{{ opensearch_data_path }}"
+    - "{{ opensearch_logs_path }}"
+    - /etc/opensearch
+
+# 安装OpenSearch
+- name: Install OpenSearch
+  apt:
+    name: opensearch
+    state: present
+    update_cache: yes
+
+# 配置OpenSearch
+- name: Configure OpenSearch
+  template:
+    src: opensearch.yml.j2
+    dest: /etc/opensearch/opensearch.yml
+    owner: opensearch
+    group: opensearch
+    mode: '0644'
+  notify: restart opensearch
+
+# 配置JVM选项
+- name: Configure JVM options
+  template:
+    src: jvm.options.j2
+    dest: /etc/opensearch/jvm.options
+    owner: opensearch
+    group: opensearch
+    mode: '0644'
+  notify: restart opensearch
+
+# 启动OpenSearch服务
+- name: Start and enable OpenSearch service
+  systemd:
+    name: opensearch
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+# 等待OpenSearch启动
+- name: Wait for OpenSearch to start
+  uri:
+    url: "http://localhost:{{ opensearch_http_port }}"
+    method: GET
+    status_code: 200
+  register: result
+  until: result.status == 200
+  retries: 30
+  delay: 10
+  ignore_errors: yes
+
+# 检查当前的Java版本
+- name: Check Java version
+  shell: java -version 2>&1 | grep -i version | awk '{print $3}' | tr -d '"'
+  register: java_version
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display Java version
+  debug:
+    msg: "当前Java版本: {{ java_version.stdout }}"
+  when: java_version.rc == 0
+
+# 完全清理现有的 OpenSearch 配置
 - name: Completely remove existing OpenSearch
   apt:
     name: opensearch
@@ -45,19 +158,20 @@
     - /var/lib/opensearch
     - /var/log/opensearch
     - /usr/share/opensearch
+    - /var/run/opensearch
+    - /etc/systemd/system/opensearch.service.d
   ignore_errors: yes
 
-- name: Create necessary directories
-  file:
-    path: "{{ item }}"
-    state: directory
-    owner: root
-    group: root
-    mode: '0755'
-  with_items:
-    - /var/run/opensearch
-    - /var/lib/opensearch
-    - /var/log/opensearch
+# 确保所有OpenSearch进程已终止
+- name: Kill any hanging OpenSearch processes
+  shell: pkill -9 -f org.opensearch.bootstrap.OpenSearch || true
+  changed_when: false
+  ignore_errors: yes
+
+# 应用系统限制更改
+- name: Apply system limits
+  shell: sysctl -p
+  ignore_errors: yes
 
 # 预先创建demo配置日志文件以避免安装过程中的错误
 - name: Create demo configuration log file
@@ -69,17 +183,43 @@
     mode: '0644'
   ignore_errors: yes
 
-# 安装 OpenSearch
-- name: Install OpenSearch
-  apt:
-    name: opensearch=2.12.0
-    state: present
-    update_cache: yes
-  environment:
-    OPENSEARCH_INITIAL_ADMIN_PASSWORD: "StrongAdminPassword123!"
-    DISABLE_INSTALL_DEMO_CONFIG: "true"
-    DISABLE_SECURITY_PLUGIN: "true"
-  ignore_errors: yes
+# 创建systemd覆盖目录
+- name: Create systemd override directory for OpenSearch
+  file:
+    path: /etc/systemd/system/opensearch.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# 配置systemd服务限制
+- name: Configure systemd override for OpenSearch
+  copy:
+    dest: /etc/systemd/system/opensearch.service.d/override.conf
+    content: |
+      [Service]
+      LimitMEMLOCK=infinity
+      LimitNOFILE=65536
+      LimitNPROC=4096
+      TimeoutStartSec=600
+      # 更新内存设置为28GB
+      Environment="OPENSEARCH_JAVA_OPTS=-Xms28g -Xmx28g -XX:+UseG1GC -XX:G1ReservePercent=25 -XX:InitiatingHeapOccupancyPercent=30"
+      # 禁用内存锁定和安全插件
+      Environment="OPENSEARCH_PERFORMANCE_ANALYZER_ENABLED=false"
+      Environment="DISABLE_SECURITY_PLUGIN=true"
+      # 启用调试日志
+      Environment="OPENSEARCH_JAVA_OPTS=${OPENSEARCH_JAVA_OPTS} -Xlog:gc*=debug:file=/var/log/opensearch/gc.log:time,uptime,level,tags:filecount=5,filesize=100m"
+      # 特定于Ubuntu设置
+      Environment="OPENSEARCH_INITIAL_ADMIN_PASSWORD=StrongAdminPassword123!"
+      Environment="DISABLE_INSTALL_DEMO_CONFIG=true"
+      # 重启策略
+      Restart=always
+      RestartSec=60s
+      StartLimitBurst=5
+      StartLimitInterval=600s
+    mode: '0644'
+    owner: root
+    group: root
 
 # 确保配置目录存在
 - name: Ensure OpenSearch configuration directory exists
@@ -91,24 +231,40 @@
     mode: '0750'
   ignore_errors: yes
 
-# 配置 OpenSearch
-- name: Configure OpenSearch
-  template:
-    src: opensearch.yml.j2
-    dest: /etc/opensearch/opensearch.yml
+# 更新配置文件权限
+- name: Update OpenSearch configuration permissions
+  file:
+    path: "{{ item }}"
     owner: root
     group: opensearch
     mode: '0640'
+  with_items:
+    - /etc/opensearch/opensearch.yml
+    - /etc/opensearch/jvm.options
   ignore_errors: yes
 
-- name: Configure JVM options
-  template:
-    src: jvm.options.j2
-    dest: /etc/opensearch/jvm.options
+# 手动创建一个基础配置(备用)
+- name: Create minimal opensearch.yml if missing
+  copy:
+    dest: /etc/opensearch/opensearch.yml
+    content: |
+      # Minimal configuration
+      cluster.name: opensearch-cluster
+      node.name: node-1
+      path.data: /var/lib/opensearch
+      path.logs: /var/log/opensearch
+      network.host: 0.0.0.0
+      http.port: 9200
+      discovery.type: single-node
+      plugins.security.ssl.http.enabled: false
+      plugins.security.disabled: true
+      bootstrap.memory_lock: false
+      action.auto_create_index: true
+    mode: '0640'
     owner: root
     group: opensearch
-    mode: '0640'
   ignore_errors: yes
+  when: not (ansible_check_mode | bool)
 
 # 禁用性能分析器插件
 - name: Create performance-analyzer-rca config directory
@@ -139,24 +295,106 @@
     state: directory
     owner: opensearch
     group: opensearch
-    mode: '0750'
+    mode: '0755'
     recurse: yes
   with_items:
     - /var/lib/opensearch
     - /var/log/opensearch
   ignore_errors: yes
 
-- name: Start and enable OpenSearch service
+# 三次尝试启动OpenSearch
+- name: First try - Start OpenSearch service
   systemd:
     name: opensearch
     state: started
     enabled: yes
   ignore_errors: yes
 
-- name: Wait for OpenSearch to start
+- name: Wait for OpenSearch to possibly start
   wait_for:
-    host: 127.0.0.1
-    port: 9200
-    delay: 10
-    timeout: 180
-  ignore_errors: yes 
+    timeout: 10
+  ignore_errors: yes
+
+- name: Check if OpenSearch is running
+  shell: systemctl status opensearch | grep "Active:" | grep "running"
+  register: opensearch_running
+  changed_when: false
+  ignore_errors: yes
+
+- name: Second try - Restart OpenSearch with environment settings
+  block:
+    - name: Update systemd environment for OpenSearch
+      shell: |
+        systemctl set-environment OPENSEARCH_JAVA_OPTS="-Xms28g -Xmx28g"
+        systemctl set-environment DISABLE_SECURITY_PLUGIN=true
+      ignore_errors: yes
+      when: opensearch_running.rc != 0
+
+    - name: Clean opensearch data if startup failed
+      file:
+        path: /var/lib/opensearch
+        state: absent
+      when: opensearch_running.rc != 0
+      ignore_errors: yes
+    
+    - name: Recreate opensearch data directory
+      file:
+        path: /var/lib/opensearch
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0755'
+      when: opensearch_running.rc != 0
+      ignore_errors: yes
+
+    - name: Second attempt to start OpenSearch
+      systemd:
+        name: opensearch
+        state: restarted
+      ignore_errors: yes
+      when: opensearch_running.rc != 0
+  when: opensearch_running.rc != 0
+
+- name: Wait before checking again
+  wait_for:
+    timeout: 60
+  ignore_errors: yes
+  when: opensearch_running.rc != 0
+
+- name: Final check if OpenSearch is running
+  shell: systemctl status opensearch | grep "Active:" || echo "Not running"
+  register: final_opensearch_status
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display OpenSearch status
+  debug:
+    msg: "OpenSearch服务状态: {{ final_opensearch_status.stdout }}"
+
+# 测试 OpenSearch API 健康状态
+- name: Test OpenSearch API responsiveness (default port)
+  shell: |
+    curl -s -o /dev/null -w "%{http_code}" http://localhost:9200 || echo "Failed"
+  register: opensearch_http_status
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display OpenSearch HTTP status
+  debug:
+    msg: "OpenSearch HTTP状态码: {{ opensearch_http_status.stdout }}"
+  
+- name: Test OpenSearch API health status (if HTTP status is 200)
+  uri:
+    url: http://localhost:9200/_cluster/health
+    method: GET
+    body_format: json
+    status_code: 200
+    timeout: 10
+  register: opensearch_health
+  ignore_errors: yes
+  when: opensearch_http_status.stdout == "200"
+  
+- name: Display OpenSearch health status
+  debug:
+    msg: "OpenSearch健康状态: {{ opensearch_health.json.status | default('unknown') }}"
+  when: opensearch_health is defined and opensearch_health.json is defined 

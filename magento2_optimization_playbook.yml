@@ -1,0 +1,744 @@
+---
+# Magento 2优化Playbook - 综合性能优化
+- name: Magento 2 Performance Optimization
+  hosts: all
+  become: yes
+  vars:
+    # 系统内存分配
+    system_memory_mb: "{{ ansible_memtotal_mb }}"
+    opensearch_memory_mb: 31744
+    redis_memory_mb: 2048
+    rabbitmq_memory_mb: 1024
+    os_reserved_memory_mb: 4096
+    php_memory_mb: 4096
+    
+    # 计算MySQL可用内存
+    mysql_available_memory_mb: "{{ system_memory_mb|int - opensearch_memory_mb|int - redis_memory_mb|int - rabbitmq_memory_mb|int - os_reserved_memory_mb|int - php_memory_mb|int }}"
+    
+    # MySQL配置参数
+    mysql_buffer_pool_size: "{{ ((mysql_available_memory_mb|int) * 0.75)|int }}M"
+    mysql_buffer_pool_instances: "{{ [ansible_processor_vcpus, 8]|min }}"
+    mysql_log_file_size: "{{ ((mysql_available_memory_mb|int) * 0.04)|int }}M"
+    mysql_max_connections: "{{ [((system_memory_mb|int) / 200)|int, 500]|min }}"
+
+    # Magento目录
+    magento_root: "/var/www/magento2"
+    
+  tasks:
+    - name: Display start message
+      debug:
+        msg: "===== 开始Magento 2性能优化 ====="
+
+    - name: Display memory allocation
+      debug:
+        msg: |
+          系统总内存: {{ system_memory_mb }}MB
+          OpenSearch已分配: {{ opensearch_memory_mb }}MB
+          Redis预留: {{ redis_memory_mb }}MB
+          RabbitMQ预留: {{ rabbitmq_memory_mb }}MB
+          PHP内存限制: {{ php_memory_mb }}MB
+          操作系统预留: {{ os_reserved_memory_mb }}MB
+          MySQL可用内存: {{ mysql_available_memory_mb }}MB
+     
+    # 1. MySQL/Percona优化
+    - name: MySQL Optimization - Backup existing config
+      copy:
+        src: /etc/mysql/my.cnf
+        dest: /etc/mysql/my.cnf.backup
+        remote_src: yes
+      ignore_errors: yes
+
+    - name: MySQL Optimization - Optimized my.cnf for Magento 2
+      copy:
+        dest: /etc/mysql/my.cnf
+        content: |
+          [mysqld]
+          # 基本设置
+          user = mysql
+          pid-file = /var/run/mysqld/mysqld.pid
+          socket = /var/run/mysqld/mysqld.sock
+          port = 3306
+          basedir = /usr
+          datadir = /var/lib/mysql
+          tmpdir = /tmp
+          lc-messages-dir = /usr/share/mysql
+
+          # 安全设置
+          local-infile = 0
+          symbolic-links = 0
+
+          # 字符集设置
+          character-set-server = utf8mb4
+          collation-server = utf8mb4_unicode_ci
+
+          # InnoDB缓冲池 - Magento 2优化
+          innodb_buffer_pool_size = {{ mysql_buffer_pool_size }}
+          innodb_buffer_pool_instances = {{ mysql_buffer_pool_instances }}
+          innodb_log_file_size = {{ mysql_log_file_size }}
+          innodb_flush_log_at_trx_commit = 1
+          innodb_flush_method = O_DIRECT
+          innodb_file_per_table = 1
+          
+          # Magento 2特定优化
+          innodb_log_buffer_size = 32M
+          innodb_io_capacity = 4000
+          innodb_io_capacity_max = 8000
+          innodb_purge_threads = 4
+          innodb_read_io_threads = 8
+          innodb_write_io_threads = 8
+          innodb_stats_on_metadata = 0
+          
+          # 查询缓存 - MySQL 8.0已移除
+          query_cache_type = 0
+          query_cache_size = 0
+          
+          # Magento 2查询优化
+          table_open_cache = 6000
+          table_definition_cache = 4000
+          
+          # 临时表设置 - Magento 报表优化
+          tmp_table_size = 64M
+          max_heap_table_size = 64M
+          
+          # 并发设置 - Magento前台优化
+          max_connections = {{ mysql_max_connections }}
+          max_allowed_packet = 64M
+          thread_stack = 256K
+          thread_cache_size = 32
+          
+          # MyISAM - 某些Magento表可能使用
+          key_buffer_size = 32M
+          myisam-recover-options = BACKUP
+          
+          # 排序缓冲区 - Magento目录查询优化
+          sort_buffer_size = 8M
+          join_buffer_size = 8M
+          read_buffer_size = 4M
+          read_rnd_buffer_size = 8M
+          
+          # 日志设置
+          log_error = /var/log/mysql/error.log
+          slow_query_log = 1
+          slow_query_log_file = /var/log/mysql/mysql-slow.log
+          long_query_time = 2
+          
+          # 二进制日志
+          server-id = 1
+          log_bin = /var/log/mysql/mysql-bin.log
+          binlog_format = ROW
+          expire_logs_days = 7
+          max_binlog_size = 100M
+          
+          [client]
+          port = 3306
+          socket = /var/run/mysqld/mysqld.sock
+          default-character-set = utf8mb4
+          
+          [mysqldump]
+          quick
+          quote-names
+          max_allowed_packet = 64M
+        mode: '0644'
+        owner: root
+        group: root
+      notify: restart mysql
+    
+    # 2. PHP优化
+    - name: PHP Optimization - Create php.ini for Magento 2
+      copy:
+        dest: /etc/php/8.3/fpm/conf.d/99-magento.ini
+        content: |
+          ; Magento 2 优化PHP设置
+          
+          ; 内存限制
+          memory_limit = 4G
+          
+          ; 执行限制
+          max_execution_time = 600
+          max_input_time = 600
+          max_input_vars = 10000
+          
+          ; 文件上传
+          upload_max_filesize = 64M
+          post_max_size = 64M
+          
+          ; 会话设置
+          session.gc_maxlifetime = 1440
+          session.auto_start = 0
+          
+          ; 错误处理
+          display_errors = Off
+          log_errors = On
+          error_log = /var/log/php/php-error.log
+          
+          ; 禁用函数
+          disable_functions = passthru,shell_exec,system,proc_open,proc_nice,popen
+          
+          ; 时区
+          date.timezone = UTC
+          
+          ; 缓存设置
+          realpath_cache_size = 10M
+          realpath_cache_ttl = 7200
+        mode: '0644'
+        owner: root
+        group: root
+      notify: restart php-fpm
+
+    - name: PHP Optimization - Configure PHP-FPM for Magento
+      copy:
+        dest: /etc/php/8.3/fpm/pool.d/magento.conf
+        content: |
+          [magento]
+          user = www-data
+          group = www-data
+          
+          listen = /run/php/php8.3-fpm-magento.sock
+          listen.owner = www-data
+          listen.group = www-data
+          
+          pm = dynamic
+          pm.max_children = 60
+          pm.start_servers = 20
+          pm.min_spare_servers = 10
+          pm.max_spare_servers = 35
+          pm.max_requests = 500
+          
+          ; 慢请求日志
+          slowlog = /var/log/php-fpm/magento-slow.log
+          request_slowlog_timeout = 10s
+          
+          ; 每个请求环境变量
+          env[PATH] = /usr/local/bin:/usr/bin:/bin
+          env[TMPDIR] = /tmp
+          
+          ; PHP设置
+          php_admin_flag[log_errors] = on
+          php_admin_value[error_log] = /var/log/php-fpm/magento-error.log
+          php_admin_value[memory_limit] = 4G
+        mode: '0644'
+        owner: root
+        group: root
+      notify: restart php-fpm
+
+    - name: PHP Optimization - OPcache settings for Magento 2
+      copy:
+        dest: /etc/php/8.3/fpm/conf.d/10-opcache.ini
+        content: |
+          ; OPcache 设置 - Magento 2优化
+          
+          zend_extension=opcache.so
+          
+          opcache.enable = 1
+          opcache.enable_cli = 1
+          opcache.memory_consumption = 512
+          opcache.interned_strings_buffer = 16
+          opcache.max_accelerated_files = 100000
+          opcache.validate_timestamps = 0
+          opcache.revalidate_freq = 0
+          opcache.save_comments = 1
+          opcache.fast_shutdown = 1
+          opcache.consistency_checks = 0
+          opcache.file_cache = /tmp/opcache
+          opcache.file_cache_only = 0
+        mode: '0644'
+        owner: root
+        group: root
+      notify: restart php-fpm
+
+    # 3. Redis优化
+    - name: Redis Optimization - Backup existing config
+      copy:
+        src: /etc/redis/redis.conf
+        dest: /etc/redis/redis.conf.backup
+        remote_src: yes
+      ignore_errors: yes
+    
+    - name: Redis Optimization - Configure Redis for Magento 2
+      copy:
+        dest: /etc/redis/redis.conf
+        content: |
+          # Redis配置 - Magento 2优化
+          
+          # 基本设置
+          daemonize yes
+          pidfile /var/run/redis/redis-server.pid
+          port 6379
+          bind 127.0.0.1
+          timeout 0
+          
+          # 性能设置
+          tcp-backlog 511
+          tcp-keepalive 60
+          
+          # 内存设置 - Magento 2缓存和会话
+          maxmemory {{ redis_memory_mb }}mb
+          maxmemory-policy allkeys-lru
+          maxmemory-samples 10
+          
+          # 持久化 - 适合Magento缓存
+          save 900 1
+          save 300 10
+          save 60 10000
+          stop-writes-on-bgsave-error yes
+          rdbcompression yes
+          rdbchecksum yes
+          dbfilename dump.rdb
+          dir /var/lib/redis
+          appendonly no
+          
+          # 日志设置
+          loglevel notice
+          logfile /var/log/redis/redis-server.log
+          
+          # 高级设置
+          hash-max-ziplist-entries 512
+          hash-max-ziplist-value 64
+          list-max-ziplist-entries 512
+          list-max-ziplist-value 64
+          set-max-intset-entries 512
+          zset-max-ziplist-entries 128
+          zset-max-ziplist-value 64
+          activerehashing yes
+          client-output-buffer-limit normal 0 0 0
+          client-output-buffer-limit slave 256mb 64mb 60
+          client-output-buffer-limit pubsub 32mb 8mb 60
+          hz 10
+          aof-rewrite-incremental-fsync yes
+        mode: '0644'
+        owner: redis
+        group: redis
+      notify: restart redis
+
+    # 4. Nginx设置 - Magento 2优化
+    - name: Nginx Optimization - Configure Nginx for Magento 2
+      copy:
+        dest: /etc/nginx/conf.d/magento2.conf
+        content: |
+          # Magento 2 Nginx配置
+          
+          # 公共服务器设置
+          server {
+              listen 80;
+              server_name example.com www.example.com;
+              set $MAGE_ROOT {{ magento_root }};
+              set $MAGE_MODE production;
+              
+              # 根目录
+              root $MAGE_ROOT/pub;
+              
+              # Magento主索引文件
+              index index.php;
+              autoindex off;
+              charset UTF-8;
+              
+              # 健康检查
+              location /health_check.php {
+                  try_files $uri =404;
+                  fastcgi_pass unix:/run/php/php8.3-fpm-magento.sock;
+                  fastcgi_index index.php;
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                  include fastcgi_params;
+              }
+              
+              # PHP处理
+              location ~ \.php$ {
+                  try_files $uri =404;
+                  fastcgi_pass unix:/run/php/php8.3-fpm-magento.sock;
+                  fastcgi_index index.php;
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                  include fastcgi_params;
+                  
+                  # Magento专用设置
+                  fastcgi_param MAGE_MODE $MAGE_MODE;
+                  fastcgi_param HTTPS $https if_not_empty;
+                  
+                  # 防止请求超时
+                  fastcgi_read_timeout 600s;
+                  fastcgi_connect_timeout 600s;
+                  fastcgi_send_timeout 600s;
+                  
+                  # 缓冲设置
+                  fastcgi_buffer_size 128k;
+                  fastcgi_buffers 4 256k;
+                  fastcgi_busy_buffers_size 256k;
+              }
+              
+              # 静态内容优化
+              location ~* \.(jpg|jpeg|png|gif|svg|js|css|ico|txt)$ {
+                  expires max;
+                  add_header Cache-Control "public";
+                  add_header X-Frame-Options "SAMEORIGIN";
+                  try_files $uri $uri/ /get.php?$args;
+              }
+              
+              # 静态文件保护
+              location ~* \.(htaccess|git|env|svn|bash|ssh|config)$ {
+                  deny all;
+              }
+              
+              # Magento特定路由
+              location / {
+                  try_files $uri $uri/ /index.php?$args;
+              }
+              
+              # 设置访问静态资源的CORS
+              location ~ ^/(pub/)?(media|static)/.*\.(ico|jpg|jpeg|png|gif|svg|js|css|swf|eot|ttf|otf|woff|woff2)$ {
+                  add_header Access-Control-Allow-Origin "*";
+                  try_files $uri $uri/ /get.php?$args;
+              }
+              
+              # 禁止直接访问的目录
+              location ~* ^/(app|var|vendor)/ { deny all; }
+              location /lib { deny all; }
+              location /pkginfo { deny all; }
+              location /report { deny all; }
+              location /var { deny all; }
+          }
+        mode: '0644'
+        owner: root
+        group: root
+      notify: restart nginx
+
+    # 5. Varnish Cache配置 - Magento 2专用
+    - name: Varnish Optimization - Configure Varnish for Magento 2
+      copy:
+        dest: /etc/varnish/default.vcl
+        content: |
+          # Magento 2专用Varnish配置
+          vcl 4.1;
+          
+          import std;
+          
+          # 后端服务器设置
+          backend default {
+              .host = "127.0.0.1";
+              .port = "8080";  # Nginx内部端口
+              .connect_timeout = 300s;
+              .first_byte_timeout = 300s;
+              .between_bytes_timeout = 300s;
+          }
+          
+          # 健康检查
+          probe healthcheck {
+              .url = "/health_check.php";
+              .timeout = 2s;
+              .interval = 5s;
+              .window = 10;
+              .threshold = 5;
+          }
+          
+          # ACL白名单设置
+          acl purge {
+              "localhost";
+              "127.0.0.1";
+          }
+          
+          # 接收子例程 - 处理请求
+          sub vcl_recv {
+              # 健康检查URL特殊处理
+              if (req.url ~ "^/health_check.php$") {
+                  return (pass);
+              }
+              
+              # 处理净化请求
+              if (req.method == "PURGE") {
+                  if (!client.ip ~ purge) {
+                      return (synth(405, "Method not allowed"));
+                  }
+                  if (!req.http.X-Magento-Tags-Pattern && !req.http.X-Pool) {
+                      return (synth(400, "X-Magento-Tags-Pattern or X-Pool header required"));
+                  }
+                  if (req.http.X-Magento-Tags-Pattern) {
+                    ban("obj.http.X-Magento-Tags ~ " + req.http.X-Magento-Tags-Pattern);
+                  }
+                  if (req.http.X-Pool) {
+                    ban("obj.http.X-Pool ~ " + req.http.X-Pool);
+                  }
+                  return (synth(200, "Purged"));
+              }
+              
+              # 跳过缓存特定URL
+              if (req.url ~ "^/(pub/)?(media|static)/.*\.(ico|jpg|jpeg|png|gif|svg|js|css|swf|eot|ttf|otf|woff|woff2)$") {
+                  # 缓存静态文件
+                  unset req.http.Https;
+                  unset req.http.Cookie;
+                  return (hash);
+              }
+              
+              # 不缓存这些路径
+              if (req.url ~ "^/(pub/)?(media|static)/.*\.(css|js)" ||
+                  req.url ~ "^/admin" ||
+                  req.url ~ "^/customer" ||
+                  req.url ~ "^/checkout" ||
+                  req.url ~ "^/onestepcheckout" ||
+                  req.url ~ "^/catalogsearch" ||
+                  req.url ~ "^/sales/guest/form" ||
+                  req.url ~ "^/contact" ||
+                  req.url ~ "^/customer" ||
+                  req.url ~ "^/account" ||
+                  req.url ~ "^/wishlist" ||
+                  req.url ~ "^/paypal" ||
+                  req.url ~ "^/sales/order/view") {
+                      return (pass);
+              }
+              
+              # 标准缓存处理
+              if (req.http.cookie ~ "PHPSESSID=") {
+                  return (pass);
+              }
+              unset req.http.cookie;
+              return (hash);
+          }
+          
+          # 后端响应子例程
+          sub vcl_backend_response {
+              if (beresp.ttl <= 0s) {
+                  set beresp.ttl = 86400s;
+                  set beresp.uncacheable = false;
+              }
+              
+              # 缓存对象设置
+              set beresp.grace = 1h;
+              
+              # 处理静态资源
+              if (bereq.url ~ "\.(?:ico|jpg|jpeg|png|gif|svg|js|css|swf|eot|ttf|otf|woff|woff2)$") {
+                  set beresp.ttl = 7d;
+              }
+              
+              # 设置Magento标签
+              if (beresp.http.X-Magento-Tags) {
+                  set beresp.http.X-Magento-Tags = beresp.http.X-Magento-Tags;
+              }
+              
+              # 默认缓存TTL
+              set beresp.ttl = 1d;
+              
+              return (deliver);
+          }
+          
+          # 缓存命中响应
+          sub vcl_deliver {
+              if (obj.hits > 0) {
+                  set resp.http.X-Cache = "HIT";
+                  set resp.http.X-Cache-Hits = obj.hits;
+              } else {
+                  set resp.http.X-Cache = "MISS";
+              }
+              
+              # 删除敏感信息
+              unset resp.http.X-Powered-By;
+              unset resp.http.Server;
+              
+              return (deliver);
+          }
+        mode: '0644'
+        owner: root
+        group: root
+      notify: restart varnish
+
+    # 6. OpenSearch配置优化 - Magento 2目录搜索
+    - name: OpenSearch Optimization - Modify config for Magento 2
+      copy:
+        dest: /etc/opensearch/opensearch.yml
+        content: |
+          # OpenSearch配置 - Magento 2目录优化
+          
+          # 集群设置
+          cluster.name: opensearch-cluster
+          node.name: node-1
+          
+          # 路径设置
+          path.data: /var/lib/opensearch
+          path.logs: /var/log/opensearch
+          
+          # 网络设置
+          network.host: 0.0.0.0
+          http.port: 9200
+          transport.host: 0.0.0.0
+          transport.port: 9300
+          
+          # 单节点发现
+          discovery.type: single-node
+          
+          # 内存设置
+          bootstrap.memory_lock: true
+          
+          # 安全设置 - 开发环境禁用
+          plugins.security.disabled: true
+          
+          # Magento 2目录搜索优化
+          action.auto_create_index: true
+          
+          # Magento 2目录和产品搜索缓存设置
+          indices.queries.cache.size: 20%
+          indices.memory.index_buffer_size: 30%
+          indices.fielddata.cache.size: 40%
+          
+          # 搜索性能优化
+          search.max_buckets: 10000
+          
+          # 线程池设置 - 针对产品搜索
+          thread_pool.search.size: 20
+          thread_pool.write.size: 10
+          
+          # 禁用性能分析器
+          opensearch.performanceanalyzer.enabled: false
+          plugins.performance_analyzer.enabled: false
+        mode: '0640'
+        owner: root
+        group: opensearch
+      notify: restart opensearch
+
+    # 7. 系统优化 - sysctl和limits
+    - name: System Optimization - Sysctl settings for Magento 2
+      copy:
+        dest: /etc/sysctl.d/99-magento-performance.conf
+        content: |
+          # Magento 2性能优化 - sysctl设置
+          
+          # 文件描述符和连接限制
+          fs.file-max = 500000
+          net.ipv4.ip_local_port_range = 1024 65535
+          net.core.somaxconn = 65535
+          net.core.netdev_max_backlog = 65535
+          
+          # 网络优化
+          net.ipv4.tcp_max_syn_backlog = 65535
+          net.ipv4.tcp_fin_timeout = 15
+          net.ipv4.tcp_keepalive_time = 300
+          net.ipv4.tcp_tw_reuse = 1
+          
+          # 内存设置
+          vm.swappiness = 10
+          vm.dirty_ratio = 40
+          vm.dirty_background_ratio = 10
+          
+          # 文件系统
+          fs.inotify.max_user_watches = 524288
+        mode: '0644'
+        owner: root
+        group: root
+      notify: reload sysctl
+
+    - name: System Optimization - Security limits for Magento services
+      copy:
+        dest: /etc/security/limits.d/99-magento-services.conf
+        content: |
+          # Magento 2相关服务 - 系统限制
+          
+          # Web服务器用户
+          www-data soft nofile 65535
+          www-data hard nofile 65535
+          www-data soft nproc 4096
+          www-data hard nproc 4096
+          
+          # MySQL/Percona用户
+          mysql soft nofile 65535
+          mysql hard nofile 65535
+          mysql soft nproc 4096
+          mysql hard nproc 4096
+          
+          # Redis用户
+          redis soft nofile 65535
+          redis hard nofile 65535
+          redis soft nproc 4096
+          redis hard nproc 4096
+          
+          # OpenSearch用户
+          opensearch soft nofile 65535
+          opensearch hard nofile 65535
+          opensearch soft nproc 4096
+          opensearch hard nproc 4096
+          opensearch soft memlock unlimited
+          opensearch hard memlock unlimited
+        mode: '0644'
+        owner: root
+        group: root
+
+    # 8. Magento 2应用级优化
+    - name: Magento 2 Application - Create magento setup script
+      copy:
+        dest: /usr/local/bin/optimize_magento
+        content: |
+          #!/bin/bash
+          # Magento 2优化脚本
+          
+          MAGE_ROOT="{{ magento_root }}"
+          
+          cd $MAGE_ROOT
+          
+          # 启用所有缓存
+          php bin/magento cache:enable
+          
+          # 设置索引器为schedule模式
+          php bin/magento indexer:set-mode schedule
+          
+          # 设置生产模式
+          php bin/magento deploy:mode:set production -s
+          
+          # 编译代码
+          php bin/magento setup:di:compile
+          
+          # 部署静态内容
+          php bin/magento setup:static-content:deploy -f
+          
+          # 清除缓存
+          php bin/magento cache:flush
+          
+          # 权限设置
+          find var generated vendor pub/static pub/media app/etc -type f -exec chmod 664 {} \;
+          find var generated vendor pub/static pub/media app/etc -type d -exec chmod 775 {} \;
+          chmod -R g+w var/cache/ var/page_cache/ var/generation/ var/view_preprocessed/ pub/static/
+          chown -R www-data:www-data .
+          
+          echo "Magento 2 optimization completed"
+        mode: '0755'
+        owner: root
+        group: root
+      ignore_errors: yes
+
+    - name: Display completion message
+      debug:
+        msg: "===== Magento 2性能优化完成 ====="
+
+  handlers:
+    - name: restart mysql
+      systemd:
+        name: mysql
+        state: restarted
+      ignore_errors: yes
+
+    - name: restart php-fpm
+      systemd:
+        name: php8.3-fpm
+        state: restarted
+      ignore_errors: yes
+
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+      ignore_errors: yes
+
+    - name: restart redis
+      systemd:
+        name: redis-server
+        state: restarted
+      ignore_errors: yes
+
+    - name: restart varnish
+      systemd:
+        name: varnish
+        state: restarted
+      ignore_errors: yes
+
+    - name: restart opensearch
+      systemd:
+        name: opensearch
+        state: restarted
+      ignore_errors: yes
+
+    - name: reload sysctl
+      shell: sysctl -p /etc/sysctl.d/99-magento-performance.conf
+      ignore_errors: yes 

@@ -3,16 +3,17 @@
 ################################################################
 ## IMPORTANT: JVM heap size
 ################################################################
--Xms1g
--Xmx1g
+## 设置适当的堆内存大小
+-Xms{{ opensearch_heap_size }}
+-Xmx{{ opensearch_heap_size }}
 
 ################################################################
 ## Expert settings
 ################################################################
 ## GC Configuration
-14-:-XX:+UseG1GC
-14-:-XX:G1ReservePercent=25
-14-:-XX:InitiatingHeapOccupancyPercent=30
+-XX:+UseG1GC
+-XX:G1ReservePercent=25
+-XX:InitiatingHeapOccupancyPercent=30
 
 ## JVM temporary directory
 -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
@@ -27,5 +28,13 @@
 ## Network settings
 -Djava.net.preferIPv4Stack=true
 
-## Explicitly allow security manager (for Java 17 compatibility)
-17-:-Djava.security.manager=allow 
+## Java 17兼容性
+-Djava.security.manager=allow
+
+## GC优化
+-XX:+ExplicitGCInvokesConcurrent
+-XX:+AlwaysPreTouch
+-XX:+ParallelRefProcEnabled
+
+## 直接内存限制 - 设置为堆大小的一半
+-XX:MaxDirectMemorySize={{ (opensearch_heap_size|replace('g','')|int / 2)|int }}g 

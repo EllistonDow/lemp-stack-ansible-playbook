@@ -1,24 +1,48 @@
 # OpenSearch configuration file
 
 # Cluster
-cluster.name: opensearch-cluster
+cluster.name: {{ opensearch_cluster_name }}
 
 # Node
-node.name: node-1
+node.name: {{ opensearch_node_name }}
 
 # Paths
-path.data: /var/lib/opensearch
-path.logs: /var/log/opensearch
+path.data: {{ opensearch_data_path }}
+path.logs: {{ opensearch_logs_path }}
 
 # Network
-network.host: 0.0.0.0
-http.port: 9200
+network.host: {{ opensearch_network_host }}
+http.port: {{ opensearch_http_port }}
+transport.port: {{ opensearch_transport_port }}
 
 # Discovery
-discovery.type: single-node
+discovery.type: {{ opensearch_discovery_type }}
 
 # Security
-plugins.security.disabled: true
+plugins.security.disabled: {% if not opensearch_security_enabled %}true{% else %}false{% endif %}
 
-# Performance settings
-bootstrap.memory_lock: false 
+# Performance settings - 禁用内存锁定以解决启动问题
+bootstrap.memory_lock: {{ opensearch_bootstrap_memory_lock }}
+
+# 线程池设置
+thread_pool.write.queue_size: {{ opensearch_thread_pool_write_queue_size }}
+thread_pool.search.queue_size: {{ opensearch_thread_pool_search_queue_size }}
+
+# 索引设置
+action.auto_create_index: {{ opensearch_action_auto_create_index }}
+
+# 禁用性能分析器
+opensearch.performanceanalyzer.enabled: false
+plugins.performance_analyzer.enabled: false
+
+# 添加超时和压缩设置
+http.max_content_length: 500mb
+http.compression: true
+
+# Magento 2目录和产品搜索缓存设置
+indices.queries.cache.size: {{ opensearch_indices_queries_cache_size }}
+indices.memory.index_buffer_size: {{ opensearch_indices_memory_index_buffer_size }}
+indices.fielddata.cache.size: {{ opensearch_indices_fielddata_cache_size }}
+
+# 搜索性能优化
+search.max_buckets: {{ opensearch_search_max_buckets }} 

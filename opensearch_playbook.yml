@@ -14,8 +14,8 @@
 
     - name: Calculate OpenSearch heap size
       set_fact:
-        # 使用系统内存的1/4但不超过8GB
-        heap_size_mb: "{{ [((system_memory.stdout|int / 1024) / 4)|int, 8192]|min }}"
+        # 设置固定28GB内存
+        heap_size_mb: "28672"
 
     - name: Display calculated heap size
       debug:
@@ -122,6 +122,7 @@
         state: present
         update_cache: yes
       environment:
+        OPENSEARCH_JAVA_OPTS: "-Xms28g -Xmx28g"
         OPENSEARCH_INITIAL_ADMIN_PASSWORD: "Str0ngP@ssw0rd!2025X#"
         DISABLE_INSTALL_DEMO_CONFIG: "true"
         DISABLE_SECURITY_PLUGIN: "true"
@@ -179,39 +180,20 @@
       copy:
         dest: /etc/opensearch/jvm.options
         content: |
-          ## JVM配置文件 - 经过优化的设置
+          ## JVM配置文件 - 使用28GB内存
           
-          # 堆大小设置 - 自动根据系统内存计算
-          -Xms{{ heap_size_mb }}m
-          -Xmx{{ heap_size_mb }}m
+          # 堆大小设置 - 28GB内存
+          -Xms28g
+          -Xmx28g
           
           # GC设置
           -XX:+UseG1GC
-          -XX:G1ReservePercent=25
-          -XX:InitiatingHeapOccupancyPercent=30
           
           # 临时目录
           -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
           
-          # 堆转储设置
-          -XX:+HeapDumpOnOutOfMemoryError
-          -XX:HeapDumpPath=/var/lib/opensearch
-          
-          # 错误文件位置
-          -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
-          
-          # 网络设置
-          -Djava.net.preferIPv4Stack=true
-          
           # Java 17兼容性
           17-:-Djava.security.manager=allow
-          
-          # 直接内存限制
-          -XX:MaxDirectMemorySize={{ (heap_size_mb|int / 2)|int }}m
-          
-          # 性能分析器设置
-          -Dclk.tck=100
-          -Djdk.attach.allowAttachSelf=true
         mode: '0640'
         owner: root
         group: opensearch
@@ -331,8 +313,9 @@
         host: 127.0.0.1
         port: 9200
         delay: 20
-        timeout: 300
+        timeout: 120
       ignore_errors: yes
+      register: startup_result
 
     - name: Check if OpenSearch is running
       shell: systemctl status opensearch | grep -o "active" || echo "not running"
@@ -356,4 +339,75 @@
       debug:
         msg: "OpenSearch API响应: {{ 'Success' if api_response.status == 200 else 'Failed' }}"
         verbosity: 0
-      when: api_response is defined 
+      when: api_response is defined
+
+    - name: Clean data directory and try again if startup failed
+      block:
+        - name: Stop OpenSearch
+          systemd:
+            name: opensearch
+            state: stopped
+          ignore_errors: yes
+          
+        - name: Clean OpenSearch data
+          file:
+            path: /var/lib/opensearch
+            state: absent
+          ignore_errors: yes
+          
+        - name: Recreate data directory
+          file:
+            path: /var/lib/opensearch
+            state: directory
+            owner: opensearch
+            group: opensearch
+            mode: '0750'
+          ignore_errors: yes
+          
+        - name: Try to start OpenSearch again
+          systemd:
+            name: opensearch
+            state: started
+          ignore_errors: yes
+          
+        - name: Wait for second startup attempt
+          wait_for:
+            host: 127.0.0.1
+            port: 9200
+            delay: 10
+            timeout: 120
+          ignore_errors: yes
+      when: startup_result is failed
+
+    # 创建systemd覆盖目录
+    - name: Create systemd override directory
+      file:
+        path: /etc/systemd/system/opensearch.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    # 添加systemd覆盖配置
+    - name: Create systemd override for OpenSearch
+      copy:
+        dest: /etc/systemd/system/opensearch.service.d/override.conf
+        content: |
+          [Service]
+          LimitMEMLOCK=infinity
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          TimeoutStartSec=600
+          Environment="OPENSEARCH_JAVA_OPTS=-Xms28g -Xmx28g"
+          Environment="DISABLE_SECURITY_PLUGIN=true"
+          Environment="OPENSEARCH_INITIAL_ADMIN_PASSWORD=admin"
+          Environment="DISABLE_INSTALL_DEMO_CONFIG=true"
+          Restart=always
+          RestartSec=30s
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes 

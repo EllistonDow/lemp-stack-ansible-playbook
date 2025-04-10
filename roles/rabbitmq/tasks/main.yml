@@ -7,8 +7,38 @@
       - curl
       - gnupg
       - apt-transport-https
+      - sudo
+      - procps
+      - socat
+      - logrotate
+      - init-system-helpers
     state: present
     update_cache: yes
+
+# 完全清理现有的RabbitMQ和Erlang配置
+- name: Stop any running RabbitMQ
+  systemd:
+    name: rabbitmq-server
+    state: stopped
+  ignore_errors: yes
+
+- name: Kill any existing RabbitMQ processes
+  shell: pkill -9 -f beam.smp || true
+  changed_when: false
+  ignore_errors: yes
+
+- name: Remove any existing RabbitMQ installations
+  apt:
+    name:
+      - rabbitmq-server
+      - erlang
+      - erlang-base
+      - erlang-nox
+      - erlang-dev
+      - erlang-common
+    state: absent
+    purge: yes
+  ignore_errors: yes
 
 - name: Remove any existing RabbitMQ repositories
   file:
@@ -17,23 +47,140 @@
   with_items:
     - /etc/apt/sources.list.d/rabbitmq_rabbitmq-server.list
     - /etc/apt/sources.list.d/packagecloud_io_rabbitmq_rabbitmq_server_ubuntu.list
+    - /etc/apt/sources.list.d/rabbitmq.list
+    - /etc/apt/sources.list.d/erlang.list
+  ignore_errors: yes
 
-- name: Update apt cache after removing repositories
+- name: Clean any existing Erlang/RabbitMQ data
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /var/lib/rabbitmq
+    - /var/log/rabbitmq
+    - /etc/rabbitmq
+    - /usr/lib/rabbitmq
+    - /etc/systemd/system/rabbitmq-server.service.d
+  ignore_errors: yes
+
+- name: Update apt cache after cleaning
   apt:
     update_cache: yes
+    cache_valid_time: 0
+  ignore_errors: yes
 
-- name: Install Erlang and RabbitMQ from Ubuntu repository
-  apt:
-    name:
-      - erlang
-      - rabbitmq-server
+# 添加官方Erlang仓库
+- name: Add erlang-solutions repository key
+  apt_key:
+    url: https://packages.erlang-solutions.com/ubuntu/erlang_solutions.asc
+    state: present
+  ignore_errors: yes
+
+- name: Add erlang-solutions repository
+  apt_repository:
+    repo: deb https://packages.erlang-solutions.com/ubuntu jammy contrib
     state: present
     update_cache: yes
+  ignore_errors: yes
 
-- name: Enable RabbitMQ management plugin
-  rabbitmq_plugin:
-    names: rabbitmq_management
-    state: enabled
+# 添加官方RabbitMQ仓库
+- name: Add RabbitMQ signing key
+  apt_key:
+    url: https://dl.cloudsmith.io/public/rabbitmq/rabbitmq-server/gpg.E495BB49CC4BBE5B.key
+    state: present
+  ignore_errors: yes
+
+- name: Add RabbitMQ repository
+  apt_repository:
+    repo: deb https://dl.cloudsmith.io/public/rabbitmq/rabbitmq-server/deb/ubuntu jammy main
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+# 分步安装Erlang和RabbitMQ
+- name: Install specific Erlang version compatible with RabbitMQ
+  apt:
+    name:
+      - erlang-base
+      - erlang-mnesia
+      - erlang-runtime-tools
+      - erlang-asn1
+      - erlang-crypto
+      - erlang-public-key
+      - erlang-ssl
+      - erlang-syntax-tools
+      - erlang-tools
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+- name: Create necessary directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  with_items:
+    - /var/lib/rabbitmq
+    - /var/log/rabbitmq
+    - /etc/rabbitmq
+    - /etc/systemd/system/rabbitmq-server.service.d
+
+- name: Configure systemd override for RabbitMQ
+  copy:
+    dest: /etc/systemd/system/rabbitmq-server.service.d/override.conf
+    content: |
+      [Service]
+      LimitNOFILE=65536
+      LimitNPROC=4096
+      TimeoutStartSec=180
+      Restart=on-failure
+      RestartSec=10
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+
+- name: Install RabbitMQ server
+  apt:
+    name: rabbitmq-server
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+- name: Set correct permissions for RabbitMQ directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: rabbitmq
+    group: rabbitmq
+    mode: '0755'
+    recurse: yes
+  with_items:
+    - /var/lib/rabbitmq
+    - /var/log/rabbitmq
+    - /etc/rabbitmq
+  ignore_errors: yes
+
+# 配置环境和限制
+- name: Configure RabbitMQ environment file
+  copy:
+    dest: /etc/default/rabbitmq-server
+    content: |
+      # RabbitMQ服务器环境变量
+      RABBITMQ_ULIMIT_NOFILES=65535
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-setcookie rabbitmq-cookie"
+      RABBITMQ_SERVER_START_ARGS=""
+      # 日志配置
+      RABBITMQ_LOGS=/var/log/rabbitmq/rabbitmq.log
+      RABBITMQ_SASL_LOGS=/var/log/rabbitmq/rabbitmq-sasl.log
+    mode: '0644'
+    owner: root
+    group: root
 
 - name: Configure RabbitMQ
   template:
@@ -42,15 +189,114 @@
     owner: rabbitmq
     group: rabbitmq
     mode: '0644'
-  notify: restart rabbitmq
+  ignore_errors: yes
 
-- name: Start and enable RabbitMQ service
+- name: Create RabbitMQ advanced config
+  copy:
+    dest: /etc/rabbitmq/advanced.config
+    content: |
+      [
+        {rabbit, [
+          {tcp_listen_options, [
+            {backlog, 128},
+            {nodelay, true},
+            {linger, {true, 0}},
+            {exit_on_close, false}
+          ]},
+          {consumer_timeout, 3600000}
+        ]}
+      ].
+    owner: rabbitmq
+    group: rabbitmq
+    mode: '0644'
+  ignore_errors: yes
+
+# 三次尝试启动RabbitMQ
+- name: First try - Start RabbitMQ service
   systemd:
     name: rabbitmq-server
     state: started
     enabled: yes
+  ignore_errors: yes
 
-- name: Create RabbitMQ admin user
+- name: Wait for RabbitMQ to possibly start
+  wait_for:
+    timeout: 10
+  ignore_errors: yes
+
+- name: Check if RabbitMQ is running
+  shell: systemctl status rabbitmq-server | grep "Active:" | grep "running"
+  register: rabbitmq_running
+  changed_when: false
+  ignore_errors: yes
+
+- name: Second try - Restart RabbitMQ with environment settings
+  block:
+    - name: Reset RabbitMQ environment
+      file:
+        path: /var/lib/rabbitmq/.erlang.cookie
+        state: absent
+      ignore_errors: yes
+      when: rabbitmq_running.rc != 0
+
+    - name: Create new Erlang cookie
+      copy:
+        dest: /var/lib/rabbitmq/.erlang.cookie
+        content: "rabbitmq-cookie-{{ ansible_date_time.epoch }}"
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0400'
+      ignore_errors: yes
+      when: rabbitmq_running.rc != 0
+
+    - name: Second attempt to start RabbitMQ
+      systemd:
+        name: rabbitmq-server
+        state: restarted
+      ignore_errors: yes
+      when: rabbitmq_running.rc != 0
+  when: rabbitmq_running.rc != 0
+
+- name: Wait before checking again
+  wait_for:
+    timeout: 20
+  ignore_errors: yes
+  when: rabbitmq_running.rc != 0
+
+- name: Final check if RabbitMQ is running
+  shell: systemctl status rabbitmq-server | grep "Active:" || echo "Not running"
+  register: final_rabbitmq_status
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display RabbitMQ status
+  debug:
+    msg: "RabbitMQ服务状态: {{ final_rabbitmq_status.stdout }}"
+
+- name: Enable RabbitMQ management plugin (only if RabbitMQ is running)
+  command: rabbitmq-plugins enable rabbitmq_management
+  ignore_errors: yes
+  when: "('running' in final_rabbitmq_status.stdout) or ('active' in final_rabbitmq_status.stdout)"
+
+- name: Test RabbitMQ API responsiveness
+  uri:
+    url: http://localhost:15672/api/overview
+    method: GET
+    user: guest
+    password: guest
+    status_code: 200
+    timeout: 5
+    force_basic_auth: yes
+  register: rabbitmq_api_response
+  ignore_errors: yes
+  when: "('running' in final_rabbitmq_status.stdout) or ('active' in final_rabbitmq_status.stdout)"
+  
+- name: Verify RabbitMQ is responding
+  debug:
+    msg: "RabbitMQ API响应: {{ rabbitmq_api_response | to_json if 'rabbitmq_api_response' in vars else '未测试API，因为服务未运行' }}"
+  ignore_errors: yes
+
+- name: Create RabbitMQ admin user (only if RabbitMQ is running)
   rabbitmq_user:
     user: "{{ rabbitmq_admin_user }}"
     password: "{{ rabbitmq_admin_password }}"
@@ -60,15 +306,22 @@
     write_priv: .*
     tags: administrator
     state: present
-  when: rabbitmq_admin_user is defined and rabbitmq_admin_password is defined
+  when: 
+    - rabbitmq_admin_user is defined
+    - rabbitmq_admin_password is defined
+    - "('running' in final_rabbitmq_status.stdout) or ('active' in final_rabbitmq_status.stdout)"
+  ignore_errors: yes
 
-- name: Create RabbitMQ application vhost
+- name: Create RabbitMQ application vhost (only if RabbitMQ is running)
   rabbitmq_vhost:
     name: "{{ rabbitmq_vhost }}"
     state: present
-  when: rabbitmq_vhost is defined
+  when: 
+    - rabbitmq_vhost is defined
+    - "('running' in final_rabbitmq_status.stdout) or ('active' in final_rabbitmq_status.stdout)"
+  ignore_errors: yes
 
-- name: Create RabbitMQ application user
+- name: Create RabbitMQ application user (only if RabbitMQ is running)
   rabbitmq_user:
     user: "{{ rabbitmq_app_user }}"
     password: "{{ rabbitmq_app_password }}"
@@ -77,7 +330,11 @@
     read_priv: .*
     write_priv: .*
     state: present
-  when: rabbitmq_app_user is defined and rabbitmq_app_password is defined
+  when: 
+    - rabbitmq_app_user is defined
+    - rabbitmq_app_password is defined
+    - "('running' in final_rabbitmq_status.stdout) or ('active' in final_rabbitmq_status.stdout)"
+  ignore_errors: yes
 
 - name: Allow RabbitMQ through UFW
   ufw:
@@ -86,4 +343,38 @@
     proto: tcp
   with_items:
     - "{{ rabbitmq_port }}"
-    - "{{ rabbitmq_management_port }}" 
+    - "{{ rabbitmq_management_port }}"
+  ignore_errors: yes
+
+# 检查 RabbitMQ 服务状态
+- name: Check RabbitMQ service status
+  shell: systemctl status rabbitmq-server || echo "RabbitMQ service status check failed"
+  register: rabbitmq_status
+  ignore_errors: yes
+  changed_when: false
+
+- name: Display RabbitMQ service status
+  debug:
+    msg: "RabbitMQ服务状态: {{ rabbitmq_status.stdout }}"
+
+# 检查 RabbitMQ 端口是否开放
+- name: Check if RabbitMQ port is open
+  shell: netstat -tuln | grep -w 5672 || ss -tuln | grep -w 5672 || echo "Port check failed"
+  register: rabbitmq_port_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Display RabbitMQ port status
+  debug:
+    msg: "RabbitMQ端口状态: {{ rabbitmq_port_check.stdout }}"
+
+# 尝试列出RabbitMQ用户
+- name: Try to list RabbitMQ users
+  shell: rabbitmqctl list_users || echo "Failed to list users"
+  register: rabbitmq_users
+  ignore_errors: yes
+  changed_when: false
+
+- name: Display RabbitMQ users
+  debug:
+    msg: "RabbitMQ用户: {{ rabbitmq_users.stdout }}" 

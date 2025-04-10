@@ -92,29 +92,82 @@
     # 清理任何现有的 OpenSearch 配置问题
     - name: Clean OpenSearch environment
       block:
-        - name: Check if OpenSearch service exists
+        - name: Check if OpenSearch service exists and is not already installed
           stat:
             path: /usr/lib/systemd/system/opensearch.service
           register: opensearch_service_exists
+          when: components_status.opensearch == 'not_installed'
 
-        - name: Stop OpenSearch service if running
+        - name: Stop OpenSearch service if running and needs reinstallation
           systemd:
             name: opensearch
             state: stopped
           ignore_errors: yes
-          when: opensearch_service_exists.stat.exists
-
+          when: components_status.opensearch == 'not_installed' and opensearch_service_exists.stat is defined and opensearch_service_exists.stat.exists
+        
         - name: Remove existing demo configuration log
           file:
             path: /var/log/opensearch/install_demo_configuration.log
             state: absent
           ignore_errors: yes
+          when: components_status.opensearch == 'not_installed'
+          
+        # 增加OpenSearch系统限制设置
+        - name: Configure system limits for OpenSearch
+          copy:
+            dest: /etc/security/limits.d/opensearch.conf
+            content: |
+              # OpenSearch系统限制配置
+              opensearch soft nofile 65536
+              opensearch hard nofile 65536
+              opensearch soft nproc 4096
+              opensearch hard nproc 4096
+              opensearch soft memlock unlimited
+              opensearch hard memlock unlimited
+              root soft memlock unlimited
+              root hard memlock unlimited
+            mode: '0644'
+            owner: root
+            group: root
+          ignore_errors: yes
+          when: components_status.opensearch == 'not_installed'
       when: components_status.opensearch == 'not_installed'
+
+    # 清理任何现有的 RabbitMQ 配置问题
+    - name: Clean RabbitMQ environment
+      block:
+        - name: Check if RabbitMQ service exists
+          stat:
+            path: /usr/lib/systemd/system/rabbitmq-server.service
+          register: rabbitmq_service_exists
+
+        - name: Stop RabbitMQ service if running
+          systemd:
+            name: rabbitmq-server
+            state: stopped
+          ignore_errors: yes
+          when: rabbitmq_service_exists.stat.exists
+
+        - name: Kill any existing RabbitMQ processes
+          shell: pkill -9 -f beam.smp || true
+          changed_when: false
+          ignore_errors: yes
+          
+        - name: Clean existing RabbitMQ data
+          file:
+            path: "{{ item }}"
+            state: absent
+          with_items:
+            - /var/lib/rabbitmq
+            - /var/log/rabbitmq
+            - /etc/rabbitmq
+          ignore_errors: yes
+      when: components_status.rabbitmq == 'not_installed'
 
     # 设置 OpenSearch 变量
     - name: Set OpenSearch variables
       set_fact:
-        opensearch_heap_size: "{{ (system_memory.stdout|int / 4)|int|default(1, true) }}g"
+        opensearch_heap_size: "16g"
         opensearch_security_enabled: false
       when: components_status.opensearch == 'not_installed'
 
@@ -221,6 +274,7 @@
           when: mysql_status.rc != 0
       ignore_errors: yes
 
+    # 修复 OpenSearch 服务
     - name: Fix OpenSearch service if needed
       block:
         - name: Check OpenSearch service status
@@ -229,12 +283,117 @@
           failed_when: false
           changed_when: false
 
+        - name: Create OpenSearch systemd override directory
+          file:
+            path: /etc/systemd/system/opensearch.service.d
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+          when: opensearch_status.rc != 0
+
+        - name: Create OpenSearch systemd override file
+          copy:
+            dest: /etc/systemd/system/opensearch.service.d/override.conf
+            content: |
+              [Service]
+              LimitMEMLOCK=infinity
+              LimitNOFILE=65536
+              LimitNPROC=4096
+              TimeoutStartSec=300
+            mode: '0644'
+            owner: root
+            group: root
+          when: opensearch_status.rc != 0
+          
+        - name: Verify OpenSearch configuration
+          lineinfile:
+            path: /etc/opensearch/opensearch.yml
+            line: 'bootstrap.memory_lock: false'
+            regexp: '^bootstrap.memory_lock:'
+            state: present
+          ignore_errors: yes
+          when: opensearch_status.rc != 0
+
+        - name: Reload systemd daemon
+          systemd:
+            daemon_reload: yes
+          when: opensearch_status.rc != 0
+
         - name: Restart OpenSearch service
           systemd:
             name: opensearch
             state: restarted
           ignore_errors: yes
           when: opensearch_status.rc != 0
+          
+        - name: Wait for OpenSearch to start
+          wait_for:
+            host: 127.0.0.1
+            port: 9200
+            delay: 10
+            timeout: 180
+          ignore_errors: yes
+          when: opensearch_status.rc != 0
+      ignore_errors: yes
+      
+    # 修复 RabbitMQ 服务
+    - name: Fix RabbitMQ service if needed
+      block:
+        - name: Check RabbitMQ service status
+          command: systemctl status rabbitmq-server
+          register: rabbitmq_status
+          failed_when: false
+          changed_when: false
+
+        - name: Ensure RabbitMQ environment file exists
+          copy:
+            dest: /etc/default/rabbitmq-server
+            content: |
+              # RabbitMQ服务器环境变量
+              RABBITMQ_ULIMIT_NOFILES=65535
+              RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-setcookie rabbitmq-cookie"
+              RABBITMQ_SERVER_START_ARGS=""
+            mode: '0644'
+            owner: root
+            group: root
+          when: rabbitmq_status.rc != 0
+        
+        - name: Verify RabbitMQ configuration
+          lineinfile:
+            path: /etc/rabbitmq/rabbitmq.conf
+            line: 'vm_memory_high_watermark.absolute = 1024MB'
+            regexp: '^vm_memory_high_watermark'
+            state: present
+          ignore_errors: yes
+          when: rabbitmq_status.rc != 0
+          
+        - name: Kill any existing RabbitMQ processes
+          shell: pkill -9 -f beam.smp || true
+          changed_when: false
+          ignore_errors: yes
+          when: rabbitmq_status.rc != 0
+
+        - name: Reload systemd daemon
+          systemd:
+            daemon_reload: yes
+          when: rabbitmq_status.rc != 0
+
+        - name: Restart RabbitMQ service
+          systemd:
+            name: rabbitmq-server
+            state: restarted
+          ignore_errors: yes
+          when: rabbitmq_status.rc != 0
+          
+        - name: Wait for RabbitMQ to start
+          wait_for:
+            host: 127.0.0.1
+            port: 5672
+            delay: 10
+            timeout: 60
+          ignore_errors: yes
+          when: rabbitmq_status.rc != 0
       ignore_errors: yes
 
     - name: Run detection script after installation
@@ -249,29 +408,12 @@
     - name: Display final installation status
       debug:
         msg: |
-          Final Installation Status:
+          ===== LEMP Stack Installation Summary =====
           {% for component, status in final_components_status.items() %}
-          - {{ component }}: {{ status }}
+          {{ component }}: {{ status }}
           {% endfor %}
-
-    - name: Display installation summary
-      debug:
-        msg: |
-          Installation Summary:
-          {% for component, status in components_status.items() %}
-          - {{ component }}: {% if status == 'installed' %}Already installed (skipped){% else %}Newly installed{% endif %}
-          {% endfor %}
-
-    - name: Display installation completion message
-      debug:
-        msg: |
-          ===================================================
-          LEMP Stack installation completed!
           
-          Some services may require additional configuration.
-          Check the logs above for any warnings or errors.
-          
-          If you encountered any issues with OpenSearch or MySQL,
-          you can run the fix-components.yml playbook:
-          sudo ansible-playbook -i inventory.yml fix-components.yml
-          =================================================== 
+          如果OpenSearch或RabbitMQ显示为"未安装"状态，可以尝试运行修复脚本:
+          - OpenSearch: sudo ansible-playbook -i inventory.yml fix-opensearch-connection.yml
+          - RabbitMQ: sudo ansible-playbook -i inventory.yml fix-rabbitmq-startup.yml
+          - 全部修复: sudo ansible-playbook -i inventory.yml fix-all-services.yml 

@@ -24,60 +24,59 @@
       debug:
         msg: "System memory: {{ system_memory.stdout }}MB"
 
-    # 由于memory lock问题，将JVM堆大小设置得较小
-    - name: Set lower heap size due to memory lock issues
+    # 根据系统内存计算合理的堆大小
+    - name: Calculate appropriate heap size
       set_fact:
-        heap_size_mb: 4096  # 4GB in MB
-        max_heap_mb: 4096  # 4GB in MB
-
-    - name: Set final heap size
-      set_fact:
-        final_heap_mb: "{{ heap_size_mb|int }}"
+        # 对于大内存系统，使用内存的一半但限制在31GB以内
+        heap_size_mb: "{{ [((system_memory.stdout|int) / 2)|int, 31744]|min }}"
+        # 对于大型堆，设置合理的直接内存大小
+        direct_memory_mb: "{{ [((system_memory.stdout|int) / 4)|int, 16384]|min }}"
 
     - name: Display calculated heap size
       debug:
-        msg: "Setting OpenSearch heap size to {{ final_heap_mb }}MB ({{ (final_heap_mb|int / 1024)|int }}GB) - reduced due to memory lock issues"
+        msg: "Setting OpenSearch heap size to {{ heap_size_mb }}MB ({{ (heap_size_mb|int / 1024)|int }}GB) - optimized for large memory system"
 
     - name: Fix OpenSearch JVM configuration
       copy:
         dest: /etc/opensearch/jvm.options
         content: |
-          ## JVM configuration with reduced heap size due to memory locking issues
+          ## JVM configuration optimized for 64GB system
 
           ################################################################
-          ## IMPORTANT: JVM heap size
+          ## IMPORTANT: JVM heap size - optimized for large memory
           ################################################################
-          -Xms{{ final_heap_mb }}m
-          -Xmx{{ final_heap_mb }}m
+          -Xms{{ heap_size_mb }}m
+          -Xmx{{ heap_size_mb }}m
 
           ################################################################
           ## Expert settings
           ################################################################
-          ## GC configuration
-          8-13:-XX:+UseConcMarkSweepGC
-          8-13:-XX:CMSInitiatingOccupancyFraction=75
-          8-13:-XX:+UseCMSInitiatingOccupancyOnly
-
-          ## G1GC Configuration
-          14-:-XX:+UseG1GC
-          14-:-XX:G1ReservePercent=25
-          14-:-XX:InitiatingHeapOccupancyPercent=30
+          ## G1GC Configuration - recommended for large heaps
+          -XX:+UseG1GC
+          -XX:G1ReservePercent=25
+          -XX:InitiatingHeapOccupancyPercent=30
           
-          ## JVM temporary directory
+          ## 显式设置MaxDirectMemorySize
+          -XX:MaxDirectMemorySize={{ direct_memory_mb }}m
+          
+          ## JVM临时目录
           -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
 
-          ## heap dumps
+          ## 堆转储设置
           -XX:+HeapDumpOnOutOfMemoryError
           -XX:HeapDumpPath=/var/lib/opensearch
 
-          ## JVM fatal error logs
+          ## JVM错误日志
           -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
 
-          ## Network settings
+          ## 网络设置
           -Djava.net.preferIPv4Stack=true
 
-          ## Explicitly allow security manager (for Java 17 compatibility)
+          ## 显式允许安全管理器(Java 17兼容性)
           17-:-Djava.security.manager=allow
+          
+          ## GC日志设置 - 对大型堆有用
+          -Xlog:gc*,gc+age=trace,safepoint:file=/var/log/opensearch/gc.log:utctime,pid,tags:filecount=32,filesize=64m
         mode: '0640'
         owner: root
         group: opensearch
@@ -86,7 +85,7 @@
       copy:
         dest: /etc/opensearch/opensearch.yml
         content: |
-          # OpenSearch 配置文件
+          # OpenSearch 配置文件 - 优化版
           cluster.name: opensearch-cluster
           node.name: node-1
           path.data: /var/lib/opensearch
@@ -95,17 +94,23 @@
           http.port: 9200
           discovery.type: single-node
           
-          # 禁用内存锁定，避免启动失败
-          bootstrap.memory_lock: false
+          # 启用内存锁定以提高性能
+          bootstrap.memory_lock: true
           
           # 安全设置
           plugins.security.disabled: true
           
-          # 索引和分片设置
+          # 索引设置
           action.auto_create_index: true
-          index.number_of_shards: 5
-          index.number_of_replicas: 0
-          indices.query.bool.max_clause_count: 10240
+          
+          # 缓存设置 - 为大内存系统优化
+          indices.queries.cache.size: 10%
+          indices.memory.index_buffer_size: 30%
+          indices.fielddata.cache.size: 20%
+          
+          # 线程池设置 - 为高负载优化
+          thread_pool.search.size: 20
+          thread_pool.write.size: 10
         mode: '0640'
         owner: root
         group: opensearch
@@ -115,7 +120,7 @@
       copy:
         dest: /etc/security/limits.d/opensearch.conf
         content: |
-          # OpenSearch system limits configuration
+          # OpenSearch system limits configuration - 大内存系统
           opensearch soft nofile 65536
           opensearch hard nofile 65536
           opensearch soft nproc 4096
@@ -125,6 +130,69 @@
         mode: '0644'
         owner: root
         group: root
+      ignore_errors: yes
+
+    - name: Update systemd service file for memory lock
+      copy:
+        dest: /usr/lib/systemd/system/opensearch.service
+        content: |
+          [Unit]
+          Description=OpenSearch
+          Documentation=https://opensearch.org/
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=simple
+          RuntimeDirectory=opensearch
+          PrivateTmp=true
+          Environment=OPENSEARCH_HOME=/usr/share/opensearch
+          Environment=OPENSEARCH_PATH_CONF=/etc/opensearch
+          Environment=PID_DIR=/var/run/opensearch
+          Environment=OPENSEARCH_SD_NOTIFY=true
+          EnvironmentFile=-/etc/default/opensearch
+
+          WorkingDirectory=/usr/share/opensearch
+
+          User=opensearch
+          Group=opensearch
+
+          ExecStart=/usr/share/opensearch/bin/systemd-entrypoint -p ${PID_DIR}/opensearch.pid --quiet
+
+          # 标准输出和标准错误重定向到日志
+          StandardOutput=journal
+          StandardError=inherit
+
+          # 确保文件资源不会被耗尽
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          # 允许内存锁定 - 重要性能优化
+          LimitMEMLOCK=infinity
+
+          # 最大超时时间
+          TimeoutStopSec=75
+
+          # 在服务失败时重启
+          Restart=always
+          RestartSec=15
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Create OpenSearch run directory
+      file:
+        path: /var/run/opensearch
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0750'
       ignore_errors: yes
 
     - name: Set correct permissions for OpenSearch directories
@@ -145,6 +213,14 @@
         name: opensearch
         state: started
         enabled: yes
+      ignore_errors: yes
+
+    - name: Wait for OpenSearch to start
+      wait_for:
+        host: 127.0.0.1
+        port: 9200
+        delay: 10
+        timeout: 180
       ignore_errors: yes
 
     - name: Display completion message

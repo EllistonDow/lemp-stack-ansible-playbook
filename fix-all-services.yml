@@ -1,0 +1,466 @@
+---
+# 综合修复OpenSearch和RabbitMQ服务问题的Playbook
+- name: Fix LEMP Stack Services
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Display start message
+      debug:
+        msg: "===== 开始修复服务问题 ====="
+
+    # 1. 收集系统信息
+    - name: Gather system info
+      shell: "lscpu && free -h && df -h"
+      register: system_info
+      changed_when: false
+
+    - name: Display system info
+      debug:
+        msg: "{{ system_info.stdout_lines }}"
+
+    # 2. 修复OpenSearch服务
+    - name: Start OpenSearch fix
+      debug:
+        msg: "----- 开始修复OpenSearch服务 -----"
+
+    - name: Check OpenSearch service status
+      shell: systemctl status opensearch || true
+      register: opensearch_status
+      changed_when: false
+
+    - name: Display OpenSearch service status
+      debug:
+        msg: "{{ opensearch_status.stdout_lines }}"
+
+    - name: Stop OpenSearch service
+      systemd:
+        name: opensearch
+        state: stopped
+      ignore_errors: yes
+
+    # 修复系统限制配置
+    - name: Update system limits for OpenSearch
+      copy:
+        dest: /etc/security/limits.d/opensearch.conf
+        content: |
+          # OpenSearch系统限制配置
+          opensearch soft nofile 65536
+          opensearch hard nofile 65536
+          opensearch soft nproc 4096
+          opensearch hard nproc 4096
+          opensearch soft memlock unlimited
+          opensearch hard memlock unlimited
+          root soft memlock unlimited
+          root hard memlock unlimited
+        mode: '0644'
+        owner: root
+        group: root
+
+    # 修复systemd服务配置
+    - name: Create systemd override directory for OpenSearch
+      file:
+        path: /etc/systemd/system/opensearch.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Update OpenSearch systemd override configuration
+      copy:
+        dest: /etc/systemd/system/opensearch.service.d/override.conf
+        content: |
+          [Service]
+          LimitMEMLOCK=infinity
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          TimeoutStartSec=300
+        mode: '0644'
+        owner: root
+        group: root
+
+    # 修复OpenSearch配置
+    - name: Update OpenSearch configuration
+      copy:
+        dest: /etc/opensearch/opensearch.yml
+        content: |
+          # OpenSearch配置文件 - 经过优化的配置
+          cluster.name: opensearch-cluster
+          node.name: node-1
+          
+          # 路径设置
+          path.data: /var/lib/opensearch
+          path.logs: /var/log/opensearch
+          
+          # 网络设置 - 允许从任何IP访问
+          network.host: 0.0.0.0
+          http.port: 9200
+          transport.port: 9300
+          
+          # 单节点发现
+          discovery.type: single-node
+          
+          # 内存设置 - 禁用内存锁定以解决启动问题
+          bootstrap.memory_lock: false
+          
+          # 禁用安全插件
+          plugins.security.disabled: true
+          
+          # 性能优化设置
+          thread_pool.write.queue_size: 1000
+          thread_pool.search.queue_size: 1000
+          
+          # 索引设置
+          action.auto_create_index: true
+          
+          # 禁用性能分析器
+          opensearch.performanceanalyzer.enabled: false
+          plugins.performance_analyzer.enabled: false
+          
+          # 添加超时和压缩设置
+          http.max_content_length: 500mb
+          http.compression: true
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    # 修复JVM配置
+    - name: Update OpenSearch JVM configuration
+      copy:
+        dest: /etc/opensearch/jvm.options
+        content: |
+          ## JVM配置文件 - 经过优化的设置
+          
+          # 降低堆内存以确保稳定启动
+          -Xms16g
+          -Xmx16g
+          
+          # GC设置
+          -XX:+UseG1GC
+          -XX:G1ReservePercent=25
+          -XX:InitiatingHeapOccupancyPercent=30
+          
+          # 临时目录
+          -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
+          
+          # 堆转储设置
+          -XX:+HeapDumpOnOutOfMemoryError
+          -XX:HeapDumpPath=/var/lib/opensearch
+          
+          # 错误文件位置
+          -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
+          
+          # 网络设置
+          -Djava.net.preferIPv4Stack=true
+          
+          # Java 17兼容性
+          -Djava.security.manager=allow
+          
+          # 直接内存限制
+          -XX:MaxDirectMemorySize=8g
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    # 修复权限问题
+    - name: Fix OpenSearch directory permissions
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0755'
+        recurse: yes
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+
+    # 重载systemd配置
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    # 启动OpenSearch服务
+    - name: Start and enable OpenSearch service
+      systemd:
+        name: opensearch
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    - name: Wait for OpenSearch to start
+      wait_for:
+        host: localhost
+        port: 9200
+        timeout: 120
+        delay: 10
+      ignore_errors: yes
+
+    # 3. 修复RabbitMQ服务
+    - name: Start RabbitMQ fix
+      debug:
+        msg: "----- 开始修复RabbitMQ服务 -----"
+
+    - name: Check RabbitMQ service status
+      shell: systemctl status rabbitmq-server || true
+      register: rabbitmq_status
+      changed_when: false
+
+    - name: Display RabbitMQ service status
+      debug:
+        msg: "{{ rabbitmq_status.stdout_lines }}"
+
+    - name: Stop RabbitMQ service if running
+      systemd:
+        name: rabbitmq-server
+        state: stopped
+      ignore_errors: yes
+
+    # 安装必要的包
+    - name: Ensure required packages for RabbitMQ are installed
+      apt:
+        name:
+          - curl
+          - gnupg
+          - apt-transport-https
+          - sudo
+          - procps
+        state: present
+        update_cache: yes
+
+    # 完全清理现有的RabbitMQ和Erlang配置
+    - name: Remove any existing RabbitMQ installations
+      apt:
+        name:
+          - rabbitmq-server
+          - erlang
+          - erlang-base
+          - erlang-nox
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Clean any existing Erlang/RabbitMQ data
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /var/lib/rabbitmq
+        - /var/log/rabbitmq
+        - /etc/rabbitmq
+      ignore_errors: yes
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    # 安装Erlang和RabbitMQ
+    - name: Install Erlang packages
+      apt:
+        name:
+          - erlang-base
+          - erlang-nox
+          - erlang-dev
+        state: present
+        update_cache: yes
+
+    - name: Create RabbitMQ directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      with_items:
+        - /var/lib/rabbitmq
+        - /var/log/rabbitmq
+        - /etc/rabbitmq
+
+    - name: Install RabbitMQ from Ubuntu repository
+      apt:
+        name: rabbitmq-server
+        state: present
+        update_cache: yes
+
+    - name: Set correct permissions for RabbitMQ directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0755'
+        recurse: yes
+      with_items:
+        - /var/lib/rabbitmq
+        - /var/log/rabbitmq
+        - /etc/rabbitmq
+
+    # 配置RabbitMQ
+    - name: Configure RabbitMQ environment file
+      copy:
+        dest: /etc/default/rabbitmq-server
+        content: |
+          # RabbitMQ服务器环境变量
+          RABBITMQ_ULIMIT_NOFILES=65535
+          RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-setcookie rabbitmq-cookie"
+          RABBITMQ_SERVER_START_ARGS=""
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Configure RabbitMQ
+      copy:
+        dest: /etc/rabbitmq/rabbitmq.conf
+        content: |
+          # RabbitMQ配置文件
+          
+          # 网络设置
+          listeners.tcp.default = 5672
+          management.tcp.port = 15672
+          
+          # 安全设置
+          loopback_users = none
+          default_user = guest
+          default_pass = guest
+          default_vhost = /
+          
+          # 资源限制 - 使用固定数值而非相对值
+          disk_free_limit.absolute = 5GB
+          vm_memory_high_watermark.absolute = 1024MB
+          
+          # 性能优化
+          channel_max = 2000
+          heartbeat = 60
+          collect_statistics_interval = 60000
+          log.file.level = warning
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0644'
+
+    - name: Create RabbitMQ advanced config
+      copy:
+        dest: /etc/rabbitmq/advanced.config
+        content: |
+          [
+            {rabbit, [
+              {tcp_listen_options, [
+                {backlog, 128},
+                {nodelay, true},
+                {linger, {true, 0}},
+                {exit_on_close, false}
+              ]},
+              {consumer_timeout, 3600000}
+            ]}
+          ].
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0644'
+
+    # 杀死已存在的RabbitMQ进程
+    - name: Kill any existing RabbitMQ processes
+      shell: pkill -9 -f beam.smp || true
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    # 启动RabbitMQ服务
+    - name: Start RabbitMQ service
+      systemd:
+        name: rabbitmq-server
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    - name: Wait for RabbitMQ to start up
+      wait_for:
+        port: 5672
+        delay: 10
+        timeout: 60
+      ignore_errors: yes
+
+    - name: Enable RabbitMQ management plugin
+      command: rabbitmq-plugins enable rabbitmq_management
+      ignore_errors: yes
+
+    - name: Restart RabbitMQ service
+      systemd:
+        name: rabbitmq-server
+        state: restarted
+      ignore_errors: yes
+
+    - name: Wait for RabbitMQ management interface
+      wait_for:
+        port: 15672
+        delay: 10
+        timeout: 60
+      ignore_errors: yes
+
+    # 4. 收集修复结果
+    - name: Check OpenSearch service status after fix
+      shell: systemctl status opensearch || true
+      register: opensearch_status_after
+      changed_when: false
+
+    - name: Display OpenSearch service status after fix
+      debug:
+        msg: "{{ opensearch_status_after.stdout_lines }}"
+
+    - name: Check RabbitMQ service status after fix
+      shell: systemctl status rabbitmq-server || true
+      register: rabbitmq_status_after
+      changed_when: false
+
+    - name: Display RabbitMQ service status after fix
+      debug:
+        msg: "{{ rabbitmq_status_after.stdout_lines }}"
+
+    # 5. 测试服务API接口
+    - name: Install curl
+      apt:
+        name: curl
+        state: present
+
+    - name: Test OpenSearch API
+      shell: curl -s http://localhost:9200 || echo "Failed to connect"
+      register: opensearch_api_response
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display OpenSearch API response
+      debug:
+        msg: "OpenSearch API响应: {{ opensearch_api_response.stdout }}"
+
+    - name: Test RabbitMQ API
+      shell: curl -s -u guest:guest http://localhost:15672/api/overview || echo "Failed to connect"
+      register: rabbitmq_api_response
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display RabbitMQ API response
+      debug:
+        msg: "RabbitMQ API响应: {{ rabbitmq_api_response.stdout }}"
+
+    # 6. 显示总结信息
+    - name: Display summary message
+      debug:
+        msg: |
+          ===== 服务修复完成 =====
+          
+          OpenSearch状态: {{ opensearch_status_after.rc == 0 | ternary('正常运行', '可能有问题') }}
+          RabbitMQ状态: {{ rabbitmq_status_after.rc == 0 | ternary('正常运行', '可能有问题') }}
+          
+          如果仍然存在问题，请尝试以下操作:
+          
+          1. 查看详细日志:
+             - OpenSearch: /var/log/opensearch/
+             - RabbitMQ: /var/log/rabbitmq/
+          
+          2. 调整内存设置:
+             - OpenSearch: 减少JVM堆大小 (当前设置为16GB)
+             - RabbitMQ: 降低内存限制 (当前设置为1GB)
+          
+          3. 尝试重启服务器后再次运行本修复脚本 

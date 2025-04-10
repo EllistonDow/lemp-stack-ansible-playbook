@@ -63,7 +63,7 @@ else
 fi
 
 # Check OpenSearch
-if dpkg -l | grep -q opensearch; then
+if is_package_installed "opensearch" && (is_service_running "opensearch" || systemctl is-enabled --quiet "opensearch"); then
   echo "opensearch=installed"
 else
   echo "opensearch=not_installed"

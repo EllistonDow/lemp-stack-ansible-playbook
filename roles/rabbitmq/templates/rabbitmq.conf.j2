@@ -10,6 +10,15 @@ default_user = guest
 default_pass = guest
 default_vhost = /
 
-# Resource limits
+# Resource limits - 使用固定数值而非相对值
 disk_free_limit.absolute = {{ rabbitmq_disk_free_limit }}
-vm_memory_high_watermark.relative = {{ rabbitmq_vm_memory_high_watermark }} 
+vm_memory_high_watermark.absolute = {{ rabbitmq_memory_limit_absolute }}
+
+# 性能优化
+channel_max = {{ rabbitmq_channel_max }}
+heartbeat = {{ rabbitmq_heartbeat }}
+collect_statistics_interval = {{ rabbitmq_collect_statistics_interval }}
+log.file.level = {{ rabbitmq_log_level }}
+
+# 改进服务稳定性
+consumer_timeout = {{ rabbitmq_consumer_timeout }} 

@@ -1,0 +1,226 @@
+---
+# 修复RabbitMQ服务启动问题的Playbook
+- name: Fix RabbitMQ Startup Issues
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Get RabbitMQ service status
+      shell: systemctl status rabbitmq-server || true
+      register: rabbitmq_status
+      changed_when: false
+
+    - name: Display RabbitMQ service status
+      debug:
+        msg: "{{ rabbitmq_status.stdout_lines }}"
+
+    - name: Check RabbitMQ logs for errors
+      shell: journalctl -u rabbitmq-server -n 50 || true
+      register: rabbitmq_logs
+      changed_when: false
+
+    - name: Display RabbitMQ logs
+      debug:
+        msg: "{{ rabbitmq_logs.stdout_lines }}"
+
+    - name: Stop RabbitMQ service if running
+      systemd:
+        name: rabbitmq-server
+        state: stopped
+      ignore_errors: yes
+
+    - name: Ensure required packages are installed
+      apt:
+        name:
+          - curl
+          - gnupg
+          - apt-transport-https
+          - sudo
+          - procps
+        state: present
+        update_cache: yes
+
+    # 完全清理现有的RabbitMQ和Erlang配置
+    - name: Remove any existing RabbitMQ installations
+      apt:
+        name:
+          - rabbitmq-server
+          - erlang
+          - erlang-base
+          - erlang-nox
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Clean any existing Erlang/RabbitMQ data
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /var/lib/rabbitmq
+        - /var/log/rabbitmq
+        - /etc/rabbitmq
+      ignore_errors: yes
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Erlang packages
+      apt:
+        name:
+          - erlang-base
+          - erlang-nox
+          - erlang-dev
+        state: present
+        update_cache: yes
+
+    - name: Create necessary directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      with_items:
+        - /var/lib/rabbitmq
+        - /var/log/rabbitmq
+        - /etc/rabbitmq
+
+    - name: Install RabbitMQ from Ubuntu repository
+      apt:
+        name: rabbitmq-server
+        state: present
+        update_cache: yes
+
+    - name: Set correct permissions for RabbitMQ directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0755'
+        recurse: yes
+      with_items:
+        - /var/lib/rabbitmq
+        - /var/log/rabbitmq
+        - /etc/rabbitmq
+
+    - name: Configure RabbitMQ environment file
+      copy:
+        dest: /etc/default/rabbitmq-server
+        content: |
+          # RabbitMQ服务器环境变量
+          RABBITMQ_ULIMIT_NOFILES=65535
+          RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-setcookie rabbitmq-cookie"
+          RABBITMQ_SERVER_START_ARGS=""
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Configure RabbitMQ
+      copy:
+        dest: /etc/rabbitmq/rabbitmq.conf
+        content: |
+          # RabbitMQ配置文件
+          
+          # 网络设置
+          listeners.tcp.default = 5672
+          management.tcp.port = 15672
+          
+          # 安全设置
+          loopback_users = none
+          default_user = guest
+          default_pass = guest
+          default_vhost = /
+          
+          # 资源限制 - 使用固定数值而非相对值
+          disk_free_limit.absolute = 5GB
+          vm_memory_high_watermark.absolute = 1024MB
+          
+          # 性能优化
+          channel_max = 2000
+          heartbeat = 60
+          collect_statistics_interval = 60000
+          log.file.level = warning
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0644'
+
+    - name: Create RabbitMQ advanced config
+      copy:
+        dest: /etc/rabbitmq/advanced.config
+        content: |
+          [
+            {rabbit, [
+              {tcp_listen_options, [
+                {backlog, 128},
+                {nodelay, true},
+                {linger, {true, 0}},
+                {exit_on_close, false}
+              ]},
+              {consumer_timeout, 3600000}
+            ]}
+          ].
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0644'
+
+    # 启动服务前确保进程不在运行
+    - name: Kill any existing RabbitMQ processes
+      shell: pkill -9 -f beam.smp || true
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Start RabbitMQ service
+      systemd:
+        name: rabbitmq-server
+        state: started
+        enabled: yes
+
+    - name: Wait for RabbitMQ to start up
+      wait_for:
+        port: 5672
+        delay: 10
+        timeout: 60
+      ignore_errors: yes
+
+    - name: Enable RabbitMQ management plugin
+      command: rabbitmq-plugins enable rabbitmq_management
+      ignore_errors: yes
+
+    - name: Restart RabbitMQ service
+      systemd:
+        name: rabbitmq-server
+        state: restarted
+      ignore_errors: yes
+
+    - name: Wait for RabbitMQ management interface
+      wait_for:
+        port: 15672
+        delay: 10
+        timeout: 60
+      ignore_errors: yes
+
+    - name: Check RabbitMQ service status after restart
+      shell: systemctl status rabbitmq-server || true
+      register: rabbitmq_status_after
+      changed_when: false
+
+    - name: Display RabbitMQ service status after restart
+      debug:
+        msg: "{{ rabbitmq_status_after.stdout_lines }}"
+
+    - name: Display important note
+      debug:
+        msg: |
+          如果RabbitMQ仍然无法启动，请尝试以下步骤:
+          1. 检查/var/log/rabbitmq/目录下的日志文件
+          2. 确保Erlang和RabbitMQ的版本兼容
+          3. 尝试使用官方RabbitMQ存储库安装而非Ubuntu默认仓库
+          4. 重启服务器以清理所有残留进程 

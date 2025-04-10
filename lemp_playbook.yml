@@ -12,6 +12,73 @@
         cache_valid_time: 3600
       when: ansible_os_family == "Debian"
 
+    # 确保系统干净，没有锁定的包管理器
+    - name: Check for dpkg locks
+      shell: lsof /var/lib/dpkg/lock* 2>/dev/null || echo "No locks"
+      register: dpkg_locks
+      changed_when: false
+
+    - name: Wait for dpkg locks to be released
+      pause:
+        seconds: 10
+      when: dpkg_locks.stdout != "No locks"
+
+    - name: Fix any broken packages
+      shell: dpkg --configure -a
+      changed_when: false
+      ignore_errors: yes
+
+    # 检查系统内存
+    - name: Check system memory
+      shell: free -m | grep Mem | awk '{print $2}'
+      register: system_memory
+      changed_when: false
+
+    - name: Display system memory
+      debug:
+        msg: "系统内存: {{ system_memory.stdout }}MB"
+
+    # 清理任何现有的 OpenSearch 配置 - 在安装前完成
+    - name: Prepare OpenSearch environment
+      block:
+        - name: Stop OpenSearch service if running
+          systemd:
+            name: opensearch
+            state: stopped
+          ignore_errors: yes
+
+        - name: Configure system limits for OpenSearch
+          copy:
+            dest: /etc/security/limits.d/opensearch.conf
+            content: |
+              # OpenSearch系统限制配置
+              opensearch soft nofile 65536
+              opensearch hard nofile 65536
+              opensearch soft nproc 4096
+              opensearch hard nproc 4096
+              opensearch soft memlock unlimited
+              opensearch hard memlock unlimited
+              root soft memlock unlimited
+              root hard memlock unlimited
+            mode: '0644'
+            owner: root
+            group: root
+          ignore_errors: yes
+
+    # 清理任何现有的 RabbitMQ 配置 - 在安装前完成
+    - name: Prepare RabbitMQ environment
+      block:
+        - name: Stop RabbitMQ service if running
+          systemd:
+            name: rabbitmq-server
+            state: stopped
+          ignore_errors: yes
+
+        - name: Kill any existing RabbitMQ processes
+          shell: pkill -9 -f beam.smp || true
+          changed_when: false
+          ignore_errors: yes
+
   roles:
     - common
     - nginx
@@ -25,4 +92,130 @@
     - fail2ban
     - certbot
     - phpmyadmin
-    - webmin 
+    - webmin
+
+  post_tasks:
+    # 验证并修复关键服务
+    - name: Verify OpenSearch installation
+      block:
+        - name: Check OpenSearch status
+          shell: systemctl status opensearch || true
+          register: opensearch_status
+          changed_when: false
+
+        - name: Create OpenSearch systemd override
+          file:
+            path: /etc/systemd/system/opensearch.service.d
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+          when: "'Active: active' not in opensearch_status.stdout"
+
+        - name: Add systemd override for OpenSearch
+          copy:
+            dest: /etc/systemd/system/opensearch.service.d/override.conf
+            content: |
+              [Service]
+              LimitMEMLOCK=infinity
+              LimitNOFILE=65536
+              LimitNPROC=4096
+              TimeoutStartSec=300
+            mode: '0644'
+            owner: root
+            group: root
+          when: "'Active: active' not in opensearch_status.stdout"
+
+        - name: Reload systemd daemon
+          systemd:
+            daemon_reload: yes
+          when: "'Active: active' not in opensearch_status.stdout"
+
+        - name: Ensure OpenSearch configuration is correct
+          lineinfile:
+            path: /etc/opensearch/opensearch.yml
+            line: "bootstrap.memory_lock: false"
+            regexp: "^bootstrap.memory_lock:"
+            state: present
+          ignore_errors: yes
+          when: "'Active: active' not in opensearch_status.stdout"
+
+        - name: Restart OpenSearch service
+          systemd:
+            name: opensearch
+            state: restarted
+          ignore_errors: yes
+          when: "'Active: active' not in opensearch_status.stdout"
+      ignore_errors: yes
+
+    - name: Verify RabbitMQ installation
+      block:
+        - name: Check RabbitMQ status
+          shell: systemctl status rabbitmq-server || true
+          register: rabbitmq_status
+          changed_when: false
+
+        - name: Set fixed memory limit for RabbitMQ
+          lineinfile:
+            path: /etc/rabbitmq/rabbitmq.conf
+            line: "vm_memory_high_watermark.absolute = 1024MB"
+            regexp: "^vm_memory_high_watermark"
+            state: present
+          ignore_errors: yes
+          when: "'Active: active' not in rabbitmq_status.stdout"
+
+        - name: Kill any hanging RabbitMQ processes
+          shell: pkill -9 -f beam.smp || true
+          changed_when: false
+          ignore_errors: yes
+          when: "'Active: active' not in rabbitmq_status.stdout"
+
+        - name: Restart RabbitMQ service
+          systemd:
+            name: rabbitmq-server
+            state: restarted
+          ignore_errors: yes
+          when: "'Active: active' not in rabbitmq_status.stdout"
+      ignore_errors: yes
+
+    # 验证所有服务状态
+    - name: Check services status
+      shell: |
+        echo "====== 服务状态检查 ======"
+        systemctl status nginx | grep -E "Active:|enabled" || echo "Nginx可能有问题"
+        systemctl status php8.3-fpm | grep -E "Active:|enabled" || echo "PHP-FPM可能有问题"
+        systemctl status mysql | grep -E "Active:|enabled" || echo "MySQL可能有问题"
+        systemctl status redis-server | grep -E "Active:|enabled" || echo "Redis可能有问题"
+        systemctl status rabbitmq-server | grep -E "Active:|enabled" || echo "RabbitMQ可能有问题"
+        systemctl status varnish | grep -E "Active:|enabled" || echo "Varnish可能有问题"
+        systemctl status opensearch | grep -E "Active:|enabled" || echo "OpenSearch可能有问题"
+        echo "=========================="
+      register: services_status
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display services status
+      debug:
+        msg: "{{ services_status.stdout_lines }}"
+
+    - name: Display installation completion message
+      debug:
+        msg: |
+          ===================================================
+          LEMP Stack 安装完成!
+          
+          如有问题的服务将在上方显示。如果 OpenSearch 或 RabbitMQ 服务显示有问题，
+          请尝试使用以下命令手动重启它们：
+          
+          - OpenSearch: sudo systemctl restart opensearch
+            检查状态: sudo systemctl status opensearch
+            检查连接: curl -s http://localhost:9200
+          
+          - RabbitMQ: sudo systemctl restart rabbitmq-server
+            检查状态: sudo systemctl status rabbitmq-server
+            检查连接: curl -s -u guest:guest http://localhost:15672/api/overview
+          
+          如果问题持续存在，请查看相应的日志文件：
+          - OpenSearch: /var/log/opensearch/
+          - RabbitMQ: /var/log/rabbitmq/
+          =================================================== 

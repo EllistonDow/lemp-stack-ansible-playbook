@@ -1,0 +1,186 @@
+---
+# 完全重新安装OpenSearch的极简Playbook
+- name: Minimal OpenSearch Fix
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: 完全停止OpenSearch服务
+      systemd:
+        name: opensearch
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: 杀死所有相关进程
+      shell: pkill -9 -f opensearch || true
+      ignore_errors: yes
+      changed_when: false
+
+    - name: 卸载现有的OpenSearch安装
+      apt:
+        name: opensearch
+        state: absent
+        purge: yes
+        autoremove: yes
+      ignore_errors: yes
+
+    - name: 清理所有OpenSearch数据和配置
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+        - /etc/opensearch
+        - /etc/systemd/system/opensearch.service.d
+        - /etc/security/limits.d/opensearch.conf
+      ignore_errors: yes
+
+    - name: 重新加载守护进程
+      systemd:
+        daemon_reload: yes
+
+    - name: 更新apt缓存
+      apt:
+        update_cache: yes
+        cache_valid_time: 0
+
+    - name: 创建必要目录
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      with_items:
+        - /etc/systemd/system/opensearch.service.d
+        - /etc/opensearch
+        - /var/lib/opensearch
+        - /var/log/opensearch
+
+    - name: 设置系统限制
+      copy:
+        dest: /etc/security/limits.d/opensearch.conf
+        content: |
+          # OpenSearch系统限制
+          opensearch soft nofile 65536
+          opensearch hard nofile 65536
+          opensearch soft nproc 4096
+          opensearch hard nproc 4096
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: 创建systemd覆盖配置
+      copy:
+        dest: /etc/systemd/system/opensearch.service.d/override.conf
+        content: |
+          [Service]
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          TimeoutStartSec=600
+          Environment="OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+          Environment="DISABLE_SECURITY_PLUGIN=true"
+          Environment="OPENSEARCH_INITIAL_ADMIN_PASSWORD=admin"
+          Environment="DISABLE_INSTALL_DEMO_CONFIG=true"
+          Environment="OPENSEARCH_JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64"
+          Restart=always
+          RestartSec=30s
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: 创建极简opensearch.yml配置
+      copy:
+        dest: /etc/opensearch/opensearch.yml
+        content: |
+          # 极简配置
+          cluster.name: opensearch-cluster
+          node.name: node-1
+          path.data: /var/lib/opensearch
+          path.logs: /var/log/opensearch
+          network.host: 0.0.0.0
+          http.port: 9200
+          discovery.type: single-node
+          plugins.security.disabled: true
+          bootstrap.memory_lock: false
+        mode: '0640'
+        owner: root
+        group: root
+
+    - name: 创建极简JVM配置
+      copy:
+        dest: /etc/opensearch/jvm.options
+        content: |
+          # 极简JVM配置
+          -Xms512m
+          -Xmx512m
+        mode: '0640'
+        owner: root
+        group: root
+
+    - name: 重新加载守护进程
+      systemd:
+        daemon_reload: yes
+
+    - name: 安装OpenSearch
+      apt:
+        name: opensearch
+        state: present
+        update_cache: yes
+      environment:
+        OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+        DISABLE_SECURITY_PLUGIN: "true"
+        DISABLE_INSTALL_DEMO_CONFIG: "true"
+        OPENSEARCH_SKIP_START: "true"
+      ignore_errors: yes
+
+    - name: 等待5秒
+      pause:
+        seconds: 5
+
+    - name: 设置目录权限
+      shell: |
+        chown -R opensearch:opensearch /var/lib/opensearch
+        chown -R opensearch:opensearch /var/log/opensearch
+        chown -R root:opensearch /etc/opensearch
+        chmod 750 /etc/opensearch
+        chmod 640 /etc/opensearch/*
+      ignore_errors: yes
+
+    - name: 启动OpenSearch服务
+      systemd:
+        name: opensearch
+        state: started
+        enabled: yes
+      ignore_errors: yes
+      
+    - name: 等待服务启动
+      wait_for:
+        host: localhost
+        port: 9200
+        timeout: 180
+      ignore_errors: yes
+      register: opensearch_startup
+
+    - name: 检查OpenSearch状态
+      shell: systemctl status opensearch || echo "服务未运行"
+      register: opensearch_status
+      changed_when: false
+      ignore_errors: yes
+
+    - name: 显示OpenSearch状态
+      debug:
+        msg: "{{ opensearch_status.stdout_lines }}"
+
+    - name: 检查OpenSearch API响应
+      shell: curl -s http://localhost:9200 || echo "API未响应"
+      register: api_response
+      changed_when: false
+      ignore_errors: yes
+
+    - name: 显示API响应
+      debug:
+        msg: "{{ api_response.stdout }}" 

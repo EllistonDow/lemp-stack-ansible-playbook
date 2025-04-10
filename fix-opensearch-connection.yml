@@ -1,0 +1,328 @@
+---
+# 修复OpenSearch连接问题的Playbook
+- name: Fix OpenSearch Connection Issues
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Get OpenSearch service status
+      shell: systemctl status opensearch || true
+      register: opensearch_status
+      changed_when: false
+
+    - name: Display OpenSearch service status
+      debug:
+        msg: "{{ opensearch_status.stdout_lines }}"
+
+    - name: Check OpenSearch logs for errors
+      shell: journalctl -u opensearch -n 50 || true
+      register: opensearch_logs
+      changed_when: false
+
+    - name: Display OpenSearch logs
+      debug:
+        msg: "{{ opensearch_logs.stdout_lines }}"
+
+    - name: Stop OpenSearch service
+      systemd:
+        name: opensearch
+        state: stopped
+
+    # 修复系统限制配置
+    - name: Update system limits for OpenSearch
+      copy:
+        dest: /etc/security/limits.d/opensearch.conf
+        content: |
+          # OpenSearch系统限制配置
+          opensearch soft nofile 65536
+          opensearch hard nofile 65536
+          opensearch soft nproc 4096
+          opensearch hard nproc 4096
+          opensearch soft memlock unlimited
+          opensearch hard memlock unlimited
+          root soft memlock unlimited
+          root hard memlock unlimited
+        mode: '0644'
+        owner: root
+        group: root
+
+    # 修复systemd服务配置
+    - name: Create systemd override directory
+      file:
+        path: /etc/systemd/system/opensearch.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Update systemd override configuration
+      copy:
+        dest: /etc/systemd/system/opensearch.service.d/override.conf
+        content: |
+          [Service]
+          LimitMEMLOCK=infinity
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          # 确保进程有足够时间启动
+          TimeoutStartSec=600
+          # 降低内存使用，提高启动成功率
+          Environment="OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+          # 禁用安全插件
+          Environment="DISABLE_SECURITY_PLUGIN=true"
+          # 禁用内存锁定和性能分析器
+          Environment="OPENSEARCH_PERFORMANCE_ANALYZER_ENABLED=false"
+          # 重启策略
+          Restart=always
+          RestartSec=60s
+          StartLimitBurst=5
+          StartLimitInterval=600s
+        mode: '0644'
+        owner: root
+        group: root
+
+    # 修复配置文件
+    - name: Update OpenSearch configuration
+      copy:
+        dest: /etc/opensearch/opensearch.yml
+        content: |
+          # OpenSearch配置文件 - 经过优化的安全配置
+          cluster.name: opensearch-cluster
+          node.name: node-1
+          
+          # 路径设置
+          path.data: /var/lib/opensearch
+          path.logs: /var/log/opensearch
+          
+          # 网络设置
+          network.host: 0.0.0.0
+          http.port: 9200
+          transport.port: 9300
+          
+          # 单节点发现
+          discovery.type: single-node
+          
+          # 内存设置 - 关闭内存锁定尝试修复启动问题
+          bootstrap.memory_lock: false
+          
+          # 禁用安全插件
+          plugins.security.disabled: true
+          
+          # 性能优化设置
+          thread_pool.write.queue_size: 1000
+          thread_pool.search.queue_size: 1000
+          
+          # 自动创建索引
+          action.auto_create_index: true
+          
+          # 禁用性能分析器
+          opensearch.performanceanalyzer.enabled: false
+          
+          # 添加超时设置
+          http.max_content_length: 500mb
+          http.compression: true
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    # 修复JVM配置
+    - name: Update OpenSearch JVM configuration
+      copy:
+        dest: /etc/opensearch/jvm.options
+        content: |
+          ## JVM配置文件 - 经过优化的设置
+          
+          # 降低堆内存以确保稳定启动
+          -Xms1g
+          -Xmx1g
+          
+          # GC设置
+          -XX:+UseG1GC
+          -XX:G1ReservePercent=25
+          -XX:InitiatingHeapOccupancyPercent=30
+          
+          # 临时目录
+          -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
+          
+          # 堆转储设置
+          -XX:+HeapDumpOnOutOfMemoryError
+          -XX:HeapDumpPath=/var/lib/opensearch
+          
+          # 错误文件位置
+          -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
+          
+          # 网络设置
+          -Djava.net.preferIPv4Stack=true
+          
+          # Java 17兼容性
+          -Djava.security.manager=allow
+        mode: '0640'
+        owner: root
+        group: opensearch
+
+    # 修复日志目录权限
+    - name: Ensure correct permissions on log directory
+      file:
+        path: /var/log/opensearch
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0755'
+        recurse: yes
+
+    # 修复数据目录权限
+    - name: Ensure correct permissions on data directory
+      file:
+        path: /var/lib/opensearch
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0755'
+        recurse: yes
+
+    # 重载systemd配置
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    # 启动服务
+    - name: Start and enable OpenSearch service
+      systemd:
+        name: opensearch
+        state: started
+        enabled: yes
+
+    # 等待服务启动
+    - name: Wait for OpenSearch to start and be accessible
+      wait_for:
+        host: localhost
+        port: 9200
+        timeout: 120
+        delay: 10
+      ignore_errors: yes
+      register: wait_result
+
+    # 安装curl命令
+    - name: Install curl
+      apt:
+        name: curl
+        state: present
+
+    # 检查OpenSearch是否响应API请求
+    - name: Check OpenSearch API response
+      shell: curl -s http://localhost:9200 || echo "Failed to connect"
+      register: api_response
+      changed_when: false
+      ignore_errors: yes
+
+    # 显示API响应
+    - name: Display API response
+      debug:
+        msg: "OpenSearch API响应: {{ api_response.stdout }}"
+
+    # 显示重要提示
+    - name: Important note about memory lock
+      debug:
+        msg: |
+          如果OpenSearch仍不能正常工作，考虑以下解决方案:
+          1. 重启服务器以应用内存锁限制
+          2. 减少JVM堆大小 (-Xms和-Xmx设置)
+          3. 确认服务器物理内存是否足够
+          4. 检查/var/log/opensearch/下的日志文件了解更多错误信息 
+
+    # 清理可能损坏的数据文件
+    - name: Clean opensearch data files if needed
+      file:
+        path: /var/lib/opensearch
+        state: absent
+      when: wait_result is failed
+      
+    - name: Recreate OpenSearch data directory
+      file:
+        path: /var/lib/opensearch
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0755'
+      when: wait_result is failed
+
+    - name: Second attempt to start OpenSearch
+      systemd:
+        name: opensearch
+        state: restarted
+      when: wait_result is failed
+      
+    - name: Wait again for OpenSearch to start (second attempt)
+      wait_for:
+        host: localhost
+        port: 9200
+        timeout: 180
+        delay: 15
+      ignore_errors: yes
+      register: second_attempt
+      when: wait_result is failed
+
+    # 完全清理OpenSearch配置和数据
+    - name: Stop OpenSearch service completely
+      shell: systemctl stop opensearch && systemctl disable opensearch
+      ignore_errors: yes
+      
+    - name: Remove all OpenSearch data and config
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+        - /etc/opensearch/jvm.options
+      when: wait_result is failed
+      
+    - name: Create fresh OpenSearch directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: opensearch
+        group: opensearch
+        mode: '0755'
+      with_items:
+        - /var/lib/opensearch
+        - /var/log/opensearch
+      when: wait_result is failed
+
+    - name: Create simple JVM options file
+      copy:
+        dest: /etc/opensearch/jvm.options
+        content: |
+          ## 简化的JVM配置
+          -Xms512m
+          -Xmx512m
+        mode: '0640'
+        owner: root
+        group: opensearch
+      when: wait_result is failed
+
+    - name: Apply OpenSearch package fix
+      shell: |
+        apt-get update
+        apt-get install --reinstall opensearch
+        dpkg --configure -a
+      ignore_errors: yes
+      when: wait_result is failed
+      
+    - name: Enable and start OpenSearch with clean configuration
+      systemd:
+        name: opensearch
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+      when: wait_result is failed
+
+    - name: Final wait for OpenSearch to start
+      wait_for:
+        host: localhost
+        port: 9200
+        timeout: 180
+        delay: 15
+      ignore_errors: yes
+      register: final_attempt
+      when: wait_result is failed 

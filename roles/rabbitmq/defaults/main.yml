@@ -8,6 +8,13 @@ rabbitmq_app_user: "app_user"
 rabbitmq_app_password: "StrongAppPassword123!"
 rabbitmq_vhost: "app_vhost"
 
-# RabbitMQ configuration
-rabbitmq_disk_free_limit: "50MB"
-rabbitmq_vm_memory_high_watermark: 0.4 
+# RabbitMQ configuration - 使用固定值而非相对值
+rabbitmq_disk_free_limit: "5GB"
+rabbitmq_memory_limit_absolute: "1024MB"  # 使用绝对值替代相对值
+
+# 性能优化参数
+rabbitmq_channel_max: 2000
+rabbitmq_heartbeat: 60
+rabbitmq_collect_statistics_interval: 60000
+rabbitmq_log_level: "warning"
+rabbitmq_consumer_timeout: 3600000  # 1小时超时，防止连接挂起 
