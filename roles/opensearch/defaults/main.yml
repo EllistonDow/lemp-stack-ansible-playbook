@@ -1,23 +1,35 @@
 ---
-# OpenSearch default variables
+# OpenSearch 默认变量配置 - 极简版
+
+# 集群和节点设置
 opensearch_cluster_name: "opensearch-cluster"
-opensearch_node_name: "node-1"
+opensearch_node_name: "{{ ansible_hostname }}"
+
+# 网络设置
 opensearch_http_port: 9200
 opensearch_transport_port: 9300
 opensearch_network_host: "0.0.0.0"
 opensearch_discovery_type: "single-node"
-opensearch_heap_size: "8g"
+
+# 内存和资源设置 - 更保守的堆内存分配
+opensearch_heap_size: "2g"
 opensearch_data_path: "/var/lib/opensearch"
 opensearch_logs_path: "/var/log/opensearch"
 
-# 内存锁定设置
+# 系统限制设置
+opensearch_nofile_limit: 65535
+opensearch_nproc_limit: 4096
+
+# 内存锁定设置 (设为false避免启动问题)
 opensearch_bootstrap_memory_lock: false
 
-# Admin password
+# 安全设置
+opensearch_security_enabled: false
 opensearch_admin_password: "StrongAdminPassword123!"
 
-# Security settings
-opensearch_security_enabled: false
+# HTTP设置
+opensearch_http_max_content_length: "100mb"
+opensearch_http_compression: true
 
 # 性能优化参数
 opensearch_thread_pool_write_queue_size: 1000

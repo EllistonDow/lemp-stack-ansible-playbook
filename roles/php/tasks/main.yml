@@ -62,10 +62,10 @@
 - name: Install PHP and extensions
   apt:
     name:
-      - php8.3=8.3.19-1+ubuntu24.04.1+deb.sury.org+1
-      - php8.3-fpm=8.3.19-1+ubuntu24.04.1+deb.sury.org+1
-      - php8.3-cli=8.3.19-1+ubuntu24.04.1+deb.sury.org+1
-      - php8.3-common=8.3.19-1+ubuntu24.04.1+deb.sury.org+1
+      - php8.3
+      - php8.3-fpm
+      - php8.3-cli
+      - php8.3-common
       - php8.3-opcache
       - php8.3-mysql
       - php8.3-zip

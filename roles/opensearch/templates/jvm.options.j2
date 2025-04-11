@@ -1,40 +1,56 @@
-## JVM configuration
+## JVM配置文件
 
 ################################################################
-## IMPORTANT: JVM heap size
+## 重要: JVM堆内存大小设置
 ################################################################
-## 设置适当的堆内存大小
+## 设置堆内存大小
 -Xms{{ opensearch_heap_size }}
 -Xmx{{ opensearch_heap_size }}
 
 ################################################################
-## Expert settings
+## 专家设置
 ################################################################
-## GC Configuration
+## GC配置
 -XX:+UseG1GC
 -XX:G1ReservePercent=25
 -XX:InitiatingHeapOccupancyPercent=30
 
-## JVM temporary directory
+## 设置GC暂停时间目标
+-XX:MaxGCPauseMillis=200
+
+## 临时目录设置
 -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
 
-## heap dumps
+## 内存溢出时的堆转储
 -XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=/var/lib/opensearch
+-XX:HeapDumpPath={{ opensearch_logs_path }}
 
-## JVM fatal error logs
--XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
+## JVM错误日志位置
+-XX:ErrorFile={{ opensearch_logs_path }}/hs_err_pid%p.log
 
-## Network settings
+## 网络设置
 -Djava.net.preferIPv4Stack=true
 
-## Java 17兼容性
+## 已知警告：Java 17+ 弃用了setSecurityManager
+## 注释掉这行会导致OpenSearch无法启动，保留但会有警告
 -Djava.security.manager=allow
 
 ## GC优化
--XX:+ExplicitGCInvokesConcurrent
 -XX:+AlwaysPreTouch
+-XX:+DisableExplicitGC
 -XX:+ParallelRefProcEnabled
+-XX:+PerfDisableSharedMem
+-XX:-OmitStackTraceInFastThrow
 
 ## 直接内存限制 - 设置为堆大小的一半
--XX:MaxDirectMemorySize={{ (opensearch_heap_size|replace('g','')|int / 2)|int }}g 
+-XX:MaxDirectMemorySize={{ (opensearch_heap_size|replace('g','')|int / 2)|int }}g
+
+## 垃圾回收日志配置 - 基本信息
+-Xlog:gc*=info:file={{ opensearch_logs_path }}/gc.log:time,uptime,level,tags:filecount=5,filesize=50m
+
+## JIT编译器优化 - 简化，避免使用不支持的参数组合
+-XX:+TieredCompilation
+
+## 系统权限
+--add-opens=java.base/java.nio=ALL-UNNAMED
+--add-opens=java.base/java.util=ALL-UNNAMED 

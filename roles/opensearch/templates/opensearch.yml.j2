@@ -1,28 +1,36 @@
-# OpenSearch configuration file
+# ======================== OpenSearch配置 =========================
 
-# Cluster
+# ------------------------ 集群设置 -----------------------------
 cluster.name: {{ opensearch_cluster_name }}
 
-# Node
+# ------------------------ 节点设置 -----------------------------
 node.name: {{ opensearch_node_name }}
 
-# Paths
+# ----------------------- 路径设置 -------------------------------
 path.data: {{ opensearch_data_path }}
 path.logs: {{ opensearch_logs_path }}
 
-# Network
+# ----------------------- 网络设置 -------------------------------
 network.host: {{ opensearch_network_host }}
 http.port: {{ opensearch_http_port }}
-transport.port: {{ opensearch_transport_port }}
 
-# Discovery
+# 增加接口超时
+http.max_content_length: {{ opensearch_http_max_content_length }}
+
+# ----------------------- 集群发现设置 -------------------------------
 discovery.type: {{ opensearch_discovery_type }}
 
-# Security
-plugins.security.disabled: {% if not opensearch_security_enabled %}true{% else %}false{% endif %}
+# ----------------------- 内存设置 -------------------------------
+# 禁用内存锁定避免错误
+bootstrap.memory_lock: false
 
-# Performance settings - 禁用内存锁定以解决启动问题
-bootstrap.memory_lock: {{ opensearch_bootstrap_memory_lock }}
+# ----------------------- 安全设置 -------------------------------
+# 显式禁用安全插件和SSL
+plugins.security.disabled: true
+
+# ----------------------- 监控设置 -------------------------------
+# 禁用性能分析器，避免内存使用过高
+plugins.performance_analyzer.enabled: false
 
 # 线程池设置
 thread_pool.write.queue_size: {{ opensearch_thread_pool_write_queue_size }}
@@ -31,12 +39,7 @@ thread_pool.search.queue_size: {{ opensearch_thread_pool_search_queue_size }}
 # 索引设置
 action.auto_create_index: {{ opensearch_action_auto_create_index }}
 
-# 禁用性能分析器
-opensearch.performanceanalyzer.enabled: false
-plugins.performance_analyzer.enabled: false
-
 # 添加超时和压缩设置
-http.max_content_length: 500mb
 http.compression: true
 
 # Magento 2目录和产品搜索缓存设置

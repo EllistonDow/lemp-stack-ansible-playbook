@@ -1,13 +1,13 @@
 ---
-# 综合修复 playbook - 修复 MySQL 和 OpenSearch 配置
+# 综合修复 playbook - 修复 MySQL, OpenSearch 和 PHP 配置
 
-- name: 综合修复 MySQL 和 OpenSearch
+- name: 综合修复 MySQL, OpenSearch 和 PHP
   hosts: all
   become: yes
   tasks:
     - name: 显示开始信息
       debug:
-        msg: "===== 开始综合修复 MySQL 和 OpenSearch ====="
+        msg: "===== 开始综合修复 MySQL, OpenSearch 和 PHP ====="
 
     # MySQL 修复部分
     - name: 停止 MySQL 服务
@@ -122,85 +122,134 @@
         state: started
         enabled: yes
 
-    # OpenSearch 修复部分
+    # PHP 修复部分
+    - name: 安装 PHP 8.3 和扩展
+      apt:
+        name:
+          - php8.3
+          - php8.3-fpm
+          - php8.3-cli
+          - php8.3-common
+          - php8.3-opcache
+          - php8.3-mysql
+          - php8.3-zip
+          - php8.3-gd
+          - php8.3-mbstring
+          - php8.3-curl
+          - php8.3-xml
+          - php8.3-bcmath
+          - php8.3-intl
+          - php8.3-soap
+          - php8.3-ldap
+          - php8.3-imap
+          - php8.3-redis
+        state: present
+        update_cache: yes
+      ignore_errors: yes
+
+    - name: 启动 PHP-FPM 服务
+      systemd:
+        name: php8.3-fpm
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    # OpenSearch 完全重装部分
     - name: 停止 OpenSearch 服务
       systemd:
         name: opensearch
         state: stopped
       ignore_errors: yes
-
-    # 设置固定的 JVM 堆大小为 31GB，考虑到大内存系统的最佳做法
-    # 对于搜索引擎，不要超过31GB的堆大小，即使有128GB内存
-    - name: 设置优化的 OpenSearch 堆大小
-      set_fact:
-        final_heap_mb: 31744  # 31GB
-
-    - name: 显示配置的堆大小
-      debug:
-        msg: "设置 OpenSearch 堆大小为 {{ final_heap_mb }}MB ({{ (final_heap_mb|int / 1024)|int }}GB) - 针对大内存系统(128GB)优化"
-
-    - name: 删除现有的 OpenSearch 配置文件
+      
+    - name: 卸载 OpenSearch 包
+      apt:
+        name: opensearch
+        state: absent
+        purge: yes
+        autoremove: yes
+      ignore_errors: yes
+      
+    - name: 清理 OpenSearch 数据和配置目录
       file:
         path: "{{ item }}"
         state: absent
       with_items:
-        - /etc/opensearch/opensearch.yml
-        - /etc/opensearch/jvm.options
+        - /etc/opensearch
+        - /var/lib/opensearch
+        - /var/log/opensearch
+        - /usr/share/opensearch
+        - /etc/systemd/system/opensearch.service.d
       ignore_errors: yes
-
-    - name: 修复 OpenSearch JVM 配置
+      
+    - name: 重新加载 systemd
+      systemd:
+        daemon_reload: yes
+        
+    # 设置系统参数
+    - name: 设置系统 kernel 参数
       copy:
-        dest: /etc/opensearch/jvm.options
+        dest: /etc/sysctl.d/99-opensearch.conf
         content: |
-          ## JVM configuration for large memory system (128GB)
-
-          ################################################################
-          ## IMPORTANT: JVM heap size
-          ################################################################
-          -Xms{{ final_heap_mb }}m
-          -Xmx{{ final_heap_mb }}m
-
-          ################################################################
-          ## Expert settings optimized for large memory system
-          ################################################################
-          ## GC configuration
-          8-13:-XX:+UseConcMarkSweepGC
-          8-13:-XX:CMSInitiatingOccupancyFraction=75
-          8-13:-XX:+UseCMSInitiatingOccupancyOnly
-
-          ## G1GC Configuration
-          14-:-XX:+UseG1GC
-          14-:-XX:G1ReservePercent=25
-          14-:-XX:InitiatingHeapOccupancyPercent=30
-          
-          ## Large page settings for better performance
-          -XX:+UseLargePages
-          -XX:LargePageSizeInBytes=2m
-
-          ## JVM temporary directory
-          -Djava.io.tmpdir=${OPENSEARCH_TMPDIR}
-
-          ## heap dumps
-          -XX:+HeapDumpOnOutOfMemoryError
-          -XX:HeapDumpPath=/var/lib/opensearch
-
-          ## JVM fatal error logs
-          -XX:ErrorFile=/var/log/opensearch/hs_err_pid%p.log
-
-          ## Network settings
-          -Djava.net.preferIPv4Stack=true
-
-          ## Explicitly allow security manager (for Java 17 compatibility)
-          17-:-Djava.security.manager=allow
-        mode: '0640'
-        owner: root
-        group: opensearch
-
-    - name: 创建 OpenSearch 配置文件
+          # OpenSearch需要的kernel参数
+          vm.max_map_count = 262144
+        mode: 0644
+        
+    - name: 应用 sysctl 设置
+      command: sysctl -p /etc/sysctl.d/99-opensearch.conf
+      changed_when: false
+      
+    # 安装依赖
+    - name: 安装必要的依赖包
+      apt:
+        name:
+          - apt-transport-https
+          - gnupg
+          - ca-certificates
+          - openjdk-17-jdk
+        state: present
+        update_cache: yes
+        
+    # 添加 OpenSearch 仓库
+    - name: 添加 OpenSearch APT key
+      apt_key:
+        url: https://artifacts.opensearch.org/publickeys/opensearch.pgp
+        state: present
+        
+    - name: 添加 OpenSearch 仓库
+      apt_repository:
+        repo: "deb https://artifacts.opensearch.org/releases/bundle/opensearch/2.x/apt stable main"
+        state: present
+        update_cache: yes
+        
+    # 安装 OpenSearch
+    - name: 安装 OpenSearch 2.x
+      apt:
+        name: opensearch
+        state: present
+        update_cache: yes
+      environment:
+        DISABLE_INSTALL_DEMO_CONFIG: "true"
+        DISABLE_SECURITY_PLUGIN: "true"
+        
+    # 创建目录
+    - name: 创建必要的目录
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      with_items:
+        - { path: '/var/lib/opensearch', owner: 'opensearch', group: 'opensearch', mode: '0750' }
+        - { path: '/var/log/opensearch', owner: 'opensearch', group: 'opensearch', mode: '0750' }
+        - { path: '/etc/opensearch', owner: 'root', group: 'opensearch', mode: '0750' }
+        
+    # 创建极简配置
+    - name: 创建极简 OpenSearch 配置
       copy:
         dest: /etc/opensearch/opensearch.yml
         content: |
-          # OpenSearch 配置文件 - 针对128GB大内存系统优化
+          # 极简OpenSearch配置
           cluster.name: opensearch-cluster
           node.name: node-1
           path.data: /var/lib/opensearch
@@ -208,57 +257,70 @@
           network.host: 0.0.0.0
           http.port: 9200
           discovery.type: single-node
-          
-          # 内存设置
-          bootstrap.memory_lock: true
-          
-          # 安全设置
+          bootstrap.memory_lock: false
           plugins.security.disabled: true
-          
-          # 索引和分片设置
-          action.auto_create_index: true
-          index.number_of_shards: 5
-          index.number_of_replicas: 0
-          indices.query.bool.max_clause_count: 10240
-        mode: '0640'
         owner: root
         group: opensearch
-
-    - name: 配置系统限制
+        mode: 0640
+        
+    # 创建JVM配置
+    - name: 创建JVM配置
       copy:
-        dest: /etc/security/limits.d/opensearch.conf
+        dest: /etc/opensearch/jvm.options
         content: |
-          # OpenSearch system limits configuration
-          opensearch soft nofile 65536
-          opensearch hard nofile 65536
-          opensearch soft nproc 4096
-          opensearch hard nproc 4096
-          opensearch soft memlock unlimited
-          opensearch hard memlock unlimited
-        mode: '0644'
+          # JVM配置 - 8GB堆内存
+          -Xms8g
+          -Xmx8g
+          
+          # GC设置
+          -XX:+UseG1GC
+          
+          # Java 17兼容性设置
+          -Djava.security.manager=allow
+        owner: root
+        group: opensearch
+        mode: 0640
+        
+    # 创建systemd覆盖
+    - name: 创建systemd覆盖目录
+      file:
+        path: /etc/systemd/system/opensearch.service.d
+        state: directory
         owner: root
         group: root
-      ignore_errors: yes
-
-    - name: 设置 OpenSearch 目录的正确权限
-      file:
-        path: "{{ item }}"
-        state: directory
-        owner: opensearch
-        group: opensearch
-        mode: '0750'
-        recurse: yes
-      with_items:
-        - /var/lib/opensearch
-        - /var/log/opensearch
-      ignore_errors: yes
-
+        mode: 0755
+        
+    - name: 创建systemd覆盖配置
+      copy:
+        dest: /etc/systemd/system/opensearch.service.d/override.conf
+        content: |
+          [Service]
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          TimeoutStartSec=180
+          Environment="OPENSEARCH_JAVA_OPTS=-Xms8g -Xmx8g"
+          Environment="DISABLE_SECURITY_PLUGIN=true"
+        owner: root
+        group: root
+        mode: 0644
+        
+    - name: 重新加载systemd配置
+      systemd:
+        daemon_reload: yes
+        
     - name: 启动 OpenSearch 服务
       systemd:
         name: opensearch
         state: started
         enabled: yes
+        
+    - name: 等待 OpenSearch 启动
+      wait_for:
+        host: localhost
+        port: 9200
+        timeout: 180
+      ignore_errors: yes
 
     - name: 显示完成信息
       debug:
-        msg: "===== MySQL 和 OpenSearch 综合修复完成 =====" 
+        msg: "===== MySQL, OpenSearch 和 PHP 综合修复完成 =====" 

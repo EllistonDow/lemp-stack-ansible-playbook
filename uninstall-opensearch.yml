@@ -1,0 +1,70 @@
+---
+- name: Uninstall OpenSearch
+  hosts: all
+  become: yes
+  tasks:
+    - name: Stop OpenSearch service
+      systemd:
+        name: opensearch
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Remove OpenSearch package
+      apt:
+        name: opensearch
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Remove OpenSearch directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /etc/opensearch
+        - /usr/share/opensearch
+        - /var/lib/opensearch
+        - /var/log/opensearch
+        - /etc/systemd/system/opensearch.service.d
+      ignore_errors: yes
+
+    - name: Remove systemd service files
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /usr/lib/systemd/system/opensearch.service
+        - /etc/systemd/system/opensearch.service
+      ignore_errors: yes
+
+    - name: Remove OpenSearch user and group
+      user:
+        name: opensearch
+        state: absent
+        remove: yes
+      ignore_errors: yes
+
+    - name: Remove any remaining OpenSearch files
+      shell: find / -name "*opensearch*" -type d -exec rm -rf {} \; 2>/dev/null || true
+      args:
+        warn: false
+      ignore_errors: yes
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Clean apt cache
+      apt:
+        autoclean: yes
+        autoremove: yes
+
+    - name: Check if OpenSearch is fully uninstalled
+      shell: dpkg -l | grep opensearch || echo "OpenSearch fully uninstalled"
+      register: uninstall_check
+      changed_when: false
+
+    - name: Show uninstall status
+      debug:
+        var: uninstall_check.stdout_lines 

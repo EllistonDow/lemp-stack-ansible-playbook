@@ -1,0 +1,92 @@
+========================================
+安全测试结果 - Fri Apr 11 14:55:09 CST 2025
+========================================
+
+
+=== ModSecurity状态检查 ===
+✅ ModSecurity已启用
+
+
+=== 测试Web应用安全防护 ===
+
+-- SQL注入测试 --
+✅ SQL注入防护正常 (返回代码: 403)
+
+-- XSS攻击测试 --
+✅ XSS防护正常 (返回代码: 403)
+
+-- 路径遍历测试 --
+✅ 路径遍历防护正常 (返回代码: 403)
+
+-- 命令注入测试 --
+✅ 命令注入防护正常 (返回代码: 403)
+
+-- ModSecurity日志分析 --
+ModSecurity审计日志存在，最近有 20 条记录
+最近的拦截记录:
+ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Ge' with parameter `5' against variable `TX:ANOMALY_SCORE' (Value: `8' ) [file "/etc/nginx/modsecurity/owasp-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf"] [line "81"] [id "949110"] [rev ""] [msg "Inbound Anomaly Score Exceeded (Total Score: 8)"] [data ""] [severity "2"] [ver "OWASP_CRS/3.3.5"] [maturity "0"] [accuracy "0"] [tag "application-multi"] [tag "language-multi"] [tag "platform-multi"] [tag "attack-generic"] [hostname "144.217.67.185"] [uri "/.git/HEAD"] [unique_id "174434745368.372516"] [ref ""]
+ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Ge' with parameter `5' against variable `TX:ANOMALY_SCORE' (Value: `8' ) [file "/etc/nginx/modsecurity/owasp-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf"] [line "81"] [id "949110"] [rev ""] [msg "Inbound Anomaly Score Exceeded (Total Score: 8)"] [data ""] [severity "2"] [ver "OWASP_CRS/3.3.5"] [maturity "0"] [accuracy "0"] [tag "application-multi"] [tag "language-multi"] [tag "platform-multi"] [tag "attack-generic"] [hostname "144.217.67.185"] [uri "/.aws/credentials"] [unique_id "174434745420.956492"] [ref ""]
+ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Ge' with parameter `5' against variable `TX:ANOMALY_SCORE' (Value: `8' ) [file "/etc/nginx/modsecurity/owasp-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf"] [line "81"] [id "949110"] [rev ""] [msg "Inbound Anomaly Score Exceeded (Total Score: 8)"] [data ""] [severity "2"] [ver "OWASP_CRS/3.3.5"] [maturity "0"] [accuracy "0"] [tag "application-multi"] [tag "language-multi"] [tag "platform-multi"] [tag "attack-generic"] [hostname "144.217.67.185"] [uri "/.bash_history"] [unique_id "174434745431.757772"] [ref ""]
+ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Ge' with parameter `5' against variable `TX:ANOMALY_SCORE' (Value: `8' ) [file "/etc/nginx/modsecurity/owasp-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf"] [line "81"] [id "949110"] [rev ""] [msg "Inbound Anomaly Score Exceeded (Total Score: 8)"] [data ""] [severity "2"] [ver "OWASP_CRS/3.3.5"] [maturity "0"] [accuracy "0"] [tag "application-multi"] [tag "language-multi"] [tag "platform-multi"] [tag "attack-generic"] [hostname "144.217.67.185"] [uri "/.bash_profile"] [unique_id "174434745429.236446"] [ref ""]
+ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Ge' with parameter `5' against variable `TX:ANOMALY_SCORE' (Value: `8' ) [file "/etc/nginx/modsecurity/owasp-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf"] [line "81"] [id "949110"] [rev ""] [msg "Inbound Anomaly Score Exceeded (Total Score: 8)"] [data ""] [severity "2"] [ver "OWASP_CRS/3.3.5"] [maturity "0"] [accuracy "0"] [tag "application-multi"] [tag "language-multi"] [tag "platform-multi"] [tag "attack-generic"] [hostname "144.217.67.185"] [uri "/.bashrc"] [unique_id "174434745487.652588"] [ref ""]
+
+
+=== TLS/SSL安全测试 ===
+
+-- 支持的TLS协议版本 --
+✅ 不安全协议 ssl2 已禁用
+✅ 不安全协议 ssl3 已禁用
+✅ 不安全协议 tls1 已禁用
+✅ 不安全协议 tls1_1 已禁用
+❓ 安全协议 tls1_2 未启用
+❓ 安全协议 tls1_3 未启用
+
+
+=== HTTP安全头测试 ===
+✅ 存在安全头: X-Content-Type-Options
+    X-Content-Type-Options: nosniff
+✅ 存在安全头: X-Frame-Options
+    X-Frame-Options: SAMEORIGIN
+✅ 存在安全头: X-XSS-Protection
+    X-XSS-Protection: 1; mode=block
+✅ 存在安全头: Content-Security-Policy
+    Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';
+✅ 存在安全头: Referrer-Policy
+    Referrer-Policy: strict-origin-when-cross-origin
+
+
+=== 防火墙状态检查 ===
+
+-- UFW防火墙状态 --
+Status: active
+
+To                         Action      From
+--                         ------      ----
+18712/tcp                  ALLOW       Anywhere                  
+80/tcp                     ALLOW       Anywhere                  
+443/tcp                    ALLOW       Anywhere                  
+3306/tcp                   ALLOW       Anywhere                  
+18712                      ALLOW       Anywhere                  
+OpenSSH                    ALLOW       Anywhere                  
+6379/tcp                   ALLOW       Anywhere                  
+5672/tcp                   ALLOW       Anywhere                  
+15672/tcp                  ALLOW       Anywhere                  
+6081/tcp                   ALLOW       Anywhere                  
+10000/tcp                  ALLOW       Anywhere                  
+18712/tcp (v6)             ALLOW       Anywhere (v6)             
+80/tcp (v6)                ALLOW       Anywhere (v6)             
+443/tcp (v6)               ALLOW       Anywhere (v6)             
+3306/tcp (v6)              ALLOW       Anywhere (v6)             
+18712 (v6)                 ALLOW       Anywhere (v6)             
+OpenSSH (v6)               ALLOW       Anywhere (v6)             
+6379/tcp (v6)              ALLOW       Anywhere (v6)             
+5672/tcp (v6)              ALLOW       Anywhere (v6)             
+15672/tcp (v6)             ALLOW       Anywhere (v6)             
+6081/tcp (v6)              ALLOW       Anywhere (v6)             
+10000/tcp (v6)             ALLOW       Anywhere (v6)             
+
+
+
+=== 测试总结 ===
+测试完成时间: Fri Apr 11 14:55:09 CST 2025
+详细测试结果已保存至: security_test_results_20250411_145509.log

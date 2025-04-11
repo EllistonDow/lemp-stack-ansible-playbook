@@ -69,51 +69,84 @@
     cache_valid_time: 0
   ignore_errors: yes
 
-# 添加官方Erlang仓库
-- name: Add erlang-solutions repository key
-  apt_key:
-    url: https://packages.erlang-solutions.com/ubuntu/erlang_solutions.asc
-    state: present
+# 下载和安装RabbitMQ团队的签名密钥
+- name: Download RabbitMQ Team signing key
+  shell: curl -1sLf "https://keys.openpgp.org/vks/v1/by-fingerprint/0A9AF2115F4687BD29803A206B73A36E6026DFCA" | gpg --dearmor > /usr/share/keyrings/com.rabbitmq.team.gpg
+  args:
+    creates: /usr/share/keyrings/com.rabbitmq.team.gpg
   ignore_errors: yes
 
-- name: Add erlang-solutions repository
-  apt_repository:
-    repo: deb https://packages.erlang-solutions.com/ubuntu jammy contrib
-    state: present
+# 下载和安装Erlang存储库密钥
+- name: Download Cloudsmith Erlang repository key
+  shell: curl -1sLf https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-erlang.E495BB49CC4BBE5B.key | gpg --dearmor > /usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg
+  args:
+    creates: /usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg
+  ignore_errors: yes
+
+# 下载和安装RabbitMQ服务器存储库密钥
+- name: Download Cloudsmith RabbitMQ server repository key
+  shell: curl -1sLf https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-server.9F4587F226208342.key | gpg --dearmor > /usr/share/keyrings/rabbitmq.9F4587F226208342.gpg
+  args:
+    creates: /usr/share/keyrings/rabbitmq.9F4587F226208342.gpg
+  ignore_errors: yes
+
+# 添加RabbitMQ和Erlang存储库
+- name: Configure APT repositories
+  copy:
+    dest: /etc/apt/sources.list.d/rabbitmq.list
+    content: |
+      ## Provides modern Erlang/OTP releases
+      ##
+      deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/ubuntu jammy main
+      deb-src [signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/ubuntu jammy main
+
+      # 另一个镜像，提供冗余
+      deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/ubuntu jammy main
+      deb-src [signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/ubuntu jammy main
+
+      ## Provides RabbitMQ
+      ##
+      deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-server/deb/ubuntu jammy main
+      deb-src [signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-server/deb/ubuntu jammy main
+
+      # 另一个镜像，提供冗余
+      deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-server/deb/ubuntu jammy main
+      deb-src [signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-server/deb/ubuntu jammy main
+    mode: '0644'
+    owner: root
+    group: root
+
+# 更新APT缓存
+- name: Update apt cache after adding RabbitMQ repositories
+  apt:
     update_cache: yes
-  ignore_errors: yes
 
-# 添加官方RabbitMQ仓库
-- name: Add RabbitMQ signing key
-  apt_key:
-    url: https://dl.cloudsmith.io/public/rabbitmq/rabbitmq-server/gpg.E495BB49CC4BBE5B.key
-    state: present
-  ignore_errors: yes
-
-- name: Add RabbitMQ repository
-  apt_repository:
-    repo: deb https://dl.cloudsmith.io/public/rabbitmq/rabbitmq-server/deb/ubuntu jammy main
-    state: present
-    update_cache: yes
-  ignore_errors: yes
-
-# 分步安装Erlang和RabbitMQ
+# 根据官方文档安装特定版本的Erlang
 - name: Install specific Erlang version compatible with RabbitMQ
   apt:
     name:
-      - erlang-base
-      - erlang-mnesia
-      - erlang-runtime-tools
-      - erlang-asn1
-      - erlang-crypto
-      - erlang-public-key
-      - erlang-ssl
-      - erlang-syntax-tools
-      - erlang-tools
+      - "erlang-base=1:26.2.5.6-1"
+      - "erlang-asn1=1:26.2.5.6-1"
+      - "erlang-crypto=1:26.2.5.6-1"
+      - "erlang-eldap=1:26.2.5.6-1"
+      - "erlang-ftp=1:26.2.5.6-1"
+      - "erlang-inets=1:26.2.5.6-1"
+      - "erlang-mnesia=1:26.2.5.6-1"
+      - "erlang-os-mon=1:26.2.5.6-1"
+      - "erlang-parsetools=1:26.2.5.6-1"
+      - "erlang-public-key=1:26.2.5.6-1"
+      - "erlang-runtime-tools=1:26.2.5.6-1"
+      - "erlang-snmp=1:26.2.5.6-1"
+      - "erlang-ssl=1:26.2.5.6-1"
+      - "erlang-syntax-tools=1:26.2.5.6-1"
+      - "erlang-tftp=1:26.2.5.6-1"
+      - "erlang-tools=1:26.2.5.6-1"
+      - "erlang-xmerl=1:26.2.5.6-1"
     state: present
     update_cache: yes
   ignore_errors: yes
 
+# 创建必要的目录
 - name: Create necessary directories
   file:
     path: "{{ item }}"
@@ -127,6 +160,7 @@
     - /etc/rabbitmq
     - /etc/systemd/system/rabbitmq-server.service.d
 
+# 配置systemd覆盖
 - name: Configure systemd override for RabbitMQ
   copy:
     dest: /etc/systemd/system/rabbitmq-server.service.d/override.conf
@@ -141,17 +175,22 @@
     owner: root
     group: root
 
+# 重新加载systemd守护程序
 - name: Reload systemd daemon
   systemd:
     daemon_reload: yes
 
+# 安装RabbitMQ服务器
 - name: Install RabbitMQ server
   apt:
     name: rabbitmq-server
     state: present
     update_cache: yes
+    install_recommends: yes
+    dpkg_options: 'force-confnew,force-confdef'
   ignore_errors: yes
 
+# 设置RabbitMQ目录的正确权限
 - name: Set correct permissions for RabbitMQ directories
   file:
     path: "{{ item }}"
@@ -182,6 +221,7 @@
     owner: root
     group: root
 
+# 配置RabbitMQ
 - name: Configure RabbitMQ
   template:
     src: rabbitmq.conf.j2
@@ -191,6 +231,7 @@
     mode: '0644'
   ignore_errors: yes
 
+# 创建RabbitMQ高级配置
 - name: Create RabbitMQ advanced config
   copy:
     dest: /etc/rabbitmq/advanced.config
